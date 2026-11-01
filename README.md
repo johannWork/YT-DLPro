@@ -2,7 +2,7 @@
   <img src="Resources/YT-DLPro.iconset/icon_512x512.png" alt="YT-DLPro logo" width="128">
 </p>
 
-<h1 align="center">YT-DLPro</h1>
+<h1 align="center">YT-DLPro (Mac)</h1>
 
 <p align="center">Native macOS video downloader interface for <code>yt-dlp</code>, <code>ffmpeg</code>, and Deno.</p>
 
