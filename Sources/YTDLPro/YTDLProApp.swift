@@ -9,5 +9,9 @@ struct YTDLProApp: App {
             MainWorkspaceView(downloads: downloads)
                 .frame(minWidth: 1020, minHeight: 700)
         }
+
+        Settings {
+            ToolSettingsView(downloads: downloads)
+        }
     }
 }

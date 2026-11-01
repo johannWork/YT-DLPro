@@ -169,6 +169,10 @@ struct MainWorkspaceView: View {
                 Spacer()
                 Button("Update yt-dlp", systemImage: "arrow.clockwise") { downloads.updateYtDlp() }
                     .disabled(downloads.isUpdatingYtDlp)
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                }
+                .help("Tool Settings")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -184,8 +188,18 @@ struct MainWorkspaceView: View {
                     Text("brew install yt-dlp ffmpeg")
                         .font(.system(.callout, design: .monospaced))
                         .textSelection(.enabled)
+                    if downloads.isDownloadingTools {
+                        ProgressView(value: downloads.toolDownloadProgress) {
+                            Text(downloads.toolDownloadStatus ?? "Downloading tools")
+                        }
+                        .frame(maxWidth: 360)
+                    } else if let downloadError = downloads.toolDownloadError {
+                        Text(downloadError).font(.caption).foregroundStyle(.red)
+                    }
                 }
                 Spacer()
+                Button("Download Tools", systemImage: "arrow.down.to.line") { downloads.downloadTools() }
+                    .disabled(downloads.isDownloadingTools)
                 Button("Check Again") { Task { await downloads.refreshTools() } }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -195,9 +209,10 @@ struct MainWorkspaceView: View {
     }
 
     private func toolLabel(_ name: String, tool: InstalledTool?) -> some View {
-        Label("\(name)  \(tool?.version ?? "Not found")", systemImage: "checkmark.circle.fill")
+        Label("\(name)  \(tool.map { "\($0.source.rawValue) · \($0.version)" } ?? "Not found")", systemImage: "checkmark.circle.fill")
             .foregroundStyle(tool == nil ? .red : .secondary)
             .font(.callout)
+            .help(tool?.path ?? "Not found")
     }
 
     private func chooseOutputFolder() {

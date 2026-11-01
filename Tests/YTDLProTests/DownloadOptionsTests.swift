@@ -49,4 +49,20 @@ final class DownloadOptionsTests: XCTestCase {
 
         XCTAssertEqual(arguments[formatIndex + 1], "vorbis")
     }
+
+    func testToolPreferenceControlsDiscoveryOrder() {
+        XCTAssertEqual(ToolDiscovery.sourceOrder(for: .systemFirst), [.system, .builtIn])
+        XCTAssertEqual(ToolDiscovery.sourceOrder(for: .builtInFirst), [.builtIn, .system])
+    }
+
+    func testToolArchitectureHasMatchingReleaseAssetName() {
+        XCTAssertTrue(["arm64", "x64"].contains(ToolArchitecture.current.rawValue))
+    }
+
+    func testYtDlpChecksumManifestFindsBinaryEntry() {
+        let manifest = "abc123  yt-dlp\ndef456 *yt-dlp_macos\n"
+
+        XCTAssertEqual(ToolInstaller.checksum(in: manifest, for: "yt-dlp_macos"), "def456")
+        XCTAssertNil(ToolInstaller.checksum(in: manifest, for: "missing-binary"))
+    }
 }

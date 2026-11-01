@@ -4,6 +4,12 @@ import Foundation
 final class DownloadCoordinator: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     @Published private(set) var tools = ToolStatus()
+    @Published var toolPreference: ToolPreference {
+        didSet {
+            UserDefaults.standard.set(toolPreference.rawValue, forKey: "toolPreference")
+            Task { await refreshTools() }
+        }
+    }
     @Published var options = DownloadOptions()
     @Published var globalOutputFolder = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Downloads", isDirectory: true).path
@@ -12,24 +18,65 @@ final class DownloadCoordinator: ObservableObject {
     @Published private(set) var isInspecting = false
     @Published private(set) var infoError: String?
     @Published private(set) var isUpdatingYtDlp = false
+    @Published private(set) var isDownloadingTools = false
+    @Published private(set) var toolDownloadProgress = 0.0
+    @Published private(set) var toolDownloadStatus: String?
+    @Published private(set) var toolDownloadError: String?
 
     private var tasks: [UUID: Task<Void, Never>] = [:]
 
     init() {
+        let savedPreference = UserDefaults.standard.string(forKey: "toolPreference")
+        _toolPreference = Published(initialValue: ToolPreference(rawValue: savedPreference ?? "") ?? .systemFirst)
         Task { await refreshTools() }
     }
 
     func refreshTools() async {
-        tools = await ToolDiscovery.locate()
+        let preference = toolPreference
+        let discoveredTools = await ToolDiscovery.locate(preference: preference)
+        guard preference == toolPreference else { return }
+        tools = discoveredTools
     }
 
     func updateYtDlp() {
         guard !isUpdatingYtDlp else { return }
+        guard let activeTool = tools.ytDlp else { return }
         isUpdatingYtDlp = true
         Task {
-            _ = try? await ShellProcess.run(command: "brew upgrade yt-dlp")
+            let command = activeTool.source == .builtIn
+                ? ShellProcess.command([activeTool.path, "-U"])
+                : "brew upgrade yt-dlp"
+            _ = try? await ShellProcess.run(command: command)
             await refreshTools()
             isUpdatingYtDlp = false
+        }
+    }
+
+    func downloadTools() {
+        guard !isDownloadingTools, !tools.missingTools.isEmpty else { return }
+        let missingNames = tools.missingTools
+        isDownloadingTools = true
+        toolDownloadProgress = 0
+        toolDownloadError = nil
+        toolDownloadStatus = "Preparing downloads"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await ToolInstaller.installMissing(missingNames) { [weak self] name, fraction, stage in
+                    Task { @MainActor [weak self] in
+                        self?.toolDownloadProgress = fraction
+                        self?.toolDownloadStatus = "\(stage): \(name)"
+                    }
+                }
+                await refreshTools()
+                toolDownloadProgress = 1
+                toolDownloadStatus = "Tools installed and verified"
+            } catch {
+                await refreshTools()
+                toolDownloadError = error.localizedDescription
+                toolDownloadStatus = nil
+            }
+            isDownloadingTools = false
         }
     }
 
@@ -52,6 +99,7 @@ final class DownloadCoordinator: ObservableObject {
     func commandPreview(for urlText: String) -> String {
         let url = parseURLs(urlText).first ?? inspectedURL
         var arguments = options.arguments(globalOutputFolder: globalOutputFolder)
+        if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
         if let url { arguments += ["--", url.absoluteString] }
         return ShellProcess.command([tools.ytDlp?.path ?? "yt-dlp"] + arguments)
     }
@@ -103,7 +151,10 @@ final class DownloadCoordinator: ObservableObject {
         jobs[index].errorMessage = nil
 
         let url = jobs[index].url.absoluteString
-        let command = ShellProcess.command([tool.path] + options.arguments(globalOutputFolder: globalOutputFolder) + ["--", url])
+        var arguments = options.arguments(globalOutputFolder: globalOutputFolder)
+        if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
+        arguments += ["--", url]
+        let command = ShellProcess.command([tool.path] + arguments)
 
         do {
             let status = try await ShellProcess.run(command: command) { [weak self] line in
