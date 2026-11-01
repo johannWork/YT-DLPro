@@ -2,8 +2,6 @@
 
 Native macOS video downloader interface for `yt-dlp`, `ffmpeg`, and Deno.
 
-# [Download Latest YT-DLPro](https://github.com/johannWork/YT-DLPro/releases/latest)
-
 <p align="center">
   <img src="Resources/YT-DLPro.iconset/icon_512x512.png" alt="YT-DLPro logo" width="128">
 </p>
