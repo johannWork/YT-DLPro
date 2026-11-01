@@ -8,6 +8,8 @@
 	<string>YT-DLPro</string>
 	<key>CFBundleExecutable</key>
 	<string>YT-DLPro</string>
+	<key>CFBundleIconFile</key>
+	<string>YT-DLPro</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.johannwork.ytdlpro</string>
 	<key>CFBundleInfoDictionaryVersion</key>

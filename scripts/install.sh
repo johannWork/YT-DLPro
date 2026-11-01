@@ -29,9 +29,10 @@ if [[ ! -x "$PRODUCT_PATH" ]]; then
 fi
 
 /bin/rm -rf "$APP_PATH"
-/bin/mkdir -p "$APP_PATH/Contents/MacOS"
+/bin/mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 /usr/bin/install -m 755 "$PRODUCT_PATH" "$APP_PATH/Contents/MacOS/YT-DLPro"
 /usr/bin/install -m 644 "$PROJECT_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
+/usr/bin/install -m 644 "$PROJECT_ROOT/Resources/YT-DLPro.icns" "$APP_PATH/Contents/Resources/YT-DLPro.icns"
 print -rn -- 'APPL????' > "$APP_PATH/Contents/PkgInfo"
 
 /usr/bin/codesign --force --deep --sign - "$APP_PATH"

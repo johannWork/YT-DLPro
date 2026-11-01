@@ -9,6 +9,7 @@ Native SwiftUI GUI for the `yt-dlp` and `ffmpeg` already installed on your Mac. 
 - Network access for video metadata and downloads
 
 The app and release ZIP are universal `arm64` + `x86_64`. Build products and test downloads stay inside the ignored `build/` directory.
+The app icon is generated from the transparent `YT-DLPro.png` logo in the project root and embedded as a native macOS ICNS resource.
 
 ## Build
 
