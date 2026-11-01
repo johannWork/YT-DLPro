@@ -5,10 +5,11 @@ let package = Package(
     name: "YTDLPro",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "YTDLPro", targets: ["YTDLPro"])
+        .executable(name: "YT-DLPro", targets: ["YTDLPro"])
     ],
     targets: [
-        .executableTarget(name: "YTDLPro")
+        .executableTarget(name: "YTDLPro"),
+        .testTarget(name: "YTDLProTests", dependencies: ["YTDLPro"])
     ],
     swiftLanguageModes: [.v5]
 )

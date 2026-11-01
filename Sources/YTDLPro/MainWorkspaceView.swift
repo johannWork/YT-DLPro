@@ -1,0 +1,273 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct MainWorkspaceView: View {
+    @ObservedObject var downloads: DownloadCoordinator
+    @State private var urlInput = ""
+    @State private var isDropTargeted = false
+    @State private var selectedTab = WorkspaceTab.queue
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolStatus
+            HSplitView {
+                sidebar
+                    .frame(minWidth: 350, idealWidth: 390, maxWidth: 480)
+                workspace
+                    .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            commandPreview
+        }
+        .background(.background)
+        .onDrop(of: [UTType.url], isTargeted: $isDropTargeted, perform: acceptDrop)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(.tint, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: downloads.infoError) { _, error in
+            if error != nil { selectedTab = .formats }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Video URLs").font(.headline)
+                    Spacer()
+                    Button("Paste & Add", systemImage: "doc.on.clipboard") {
+                        if let text = NSPasteboard.general.string(forType: .string) {
+                            urlInput = text
+                            downloads.addURLs(from: text)
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Paste URLs and add them to the queue")
+                    .keyboardShortcut("v", modifiers: .command)
+                }
+                TextEditor(text: $urlInput)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(height: 76)
+                    .overlay(alignment: .topLeading) {
+                        if urlInput.isEmpty {
+                            Text("One URL per line. Playlist URLs are supported.")
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 6)
+                                .padding(.top, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .onDrop(of: [UTType.url], isTargeted: $isDropTargeted, perform: acceptDrop)
+                HStack {
+                    Button("Inspect", systemImage: "info.circle") { downloads.inspect(from: urlInput) }
+                        .disabled(urlInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || downloads.isInspecting)
+                    Button("Add to Queue", systemImage: "plus") {
+                        downloads.addURLs(from: urlInput)
+                    }
+                    .disabled(urlInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Spacer()
+                    Button("Start", systemImage: "arrow.down.circle.fill") { downloads.startQueued() }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(downloads.tools.ytDlp == nil || !downloads.jobs.contains { $0.status == .queued || $0.status == .failed || $0.status == .cancelled })
+                }
+                VideoInfoHeader(info: downloads.videoInfo, isLoading: downloads.isInspecting, error: downloads.infoError)
+            }
+            .padding(14)
+
+            Divider()
+
+            DownloadOptionsPanel(
+                options: $downloads.options,
+                globalOutputFolder: $downloads.globalOutputFolder,
+                chooseFolder: chooseOutputFolder
+            )
+        }
+        .background(.background)
+    }
+
+    private var workspace: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("Workspace", selection: $selectedTab) {
+                    ForEach(WorkspaceTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 280)
+                Spacer()
+                Text("\(downloads.jobs.count) queued")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+            switch selectedTab {
+            case .queue:
+                queueList
+            case .formats:
+                FormatsPanel(
+                    formats: downloads.videoInfo?.formats ?? [],
+                    selectedFormatID: $downloads.options.selectedFormatID
+                )
+            }
+        }
+    }
+
+    private var queueList: some View {
+        Group {
+            if downloads.jobs.isEmpty {
+                ContentUnavailableView("Queue is empty", systemImage: "arrow.down.circle", description: Text("Add video or playlist URLs to begin."))
+            } else {
+                List(downloads.jobs) { job in
+                    QueueRow(job: job, cancel: { downloads.cancel(job) }, remove: { downloads.remove(job) })
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+
+    private var commandPreview: some View {
+        let command = downloads.commandPreview(for: urlInput)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("Command Preview", systemImage: "chevron.left.forwardslash.chevron.right")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button("Copy", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                }
+                .labelStyle(.iconOnly)
+                .help("Copy command")
+            }
+            Text(command)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(2)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.35))
+    }
+
+    @ViewBuilder
+    private var toolStatus: some View {
+        if downloads.tools.missingTools.isEmpty {
+            HStack(spacing: 18) {
+                toolLabel("yt-dlp", tool: downloads.tools.ytDlp)
+                toolLabel("ffmpeg", tool: downloads.tools.ffmpeg)
+                Spacer()
+                Button("Update yt-dlp", systemImage: "arrow.clockwise") { downloads.updateYtDlp() }
+                    .disabled(downloads.isUpdatingYtDlp)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(.quaternary.opacity(0.45))
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Required tools not found: \(downloads.tools.missingTools.joined(separator: ", "))")
+                        .fontWeight(.semibold)
+                    Text("Install yt-dlp and ffmpeg with Homebrew:").foregroundStyle(.secondary)
+                    Text("brew install yt-dlp ffmpeg")
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Button("Check Again") { Task { await downloads.refreshTools() } }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.orange.opacity(0.1))
+        }
+    }
+
+    private func toolLabel(_ name: String, tool: InstalledTool?) -> some View {
+        Label("\(name)  \(tool?.version ?? "Not found")", systemImage: "checkmark.circle.fill")
+            .foregroundStyle(tool == nil ? .red : .secondary)
+            .font(.callout)
+    }
+
+    private func chooseOutputFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            downloads.options.outputFolder = url.path
+        }
+    }
+
+    private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+        let matching = providers.filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !matching.isEmpty else { return false }
+        for provider in matching {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    urlInput = url.absoluteString
+                    downloads.addURLs(from: url.absoluteString)
+                }
+            }
+        }
+        return true
+    }
+}
+
+private enum WorkspaceTab: String, CaseIterable, Identifiable {
+    case queue = "Queue"
+    case formats = "Formats"
+    var id: String { rawValue }
+}
+
+private struct QueueRow: View {
+    let job: DownloadJob
+    let cancel: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(job.url.absoluteString)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer(minLength: 10)
+                Text(job.status.rawValue)
+                    .font(.callout)
+                    .foregroundStyle(job.status == .failed ? .red : .secondary)
+                Button(job.status == .downloading ? "Cancel" : "Remove", systemImage: job.status == .downloading ? "xmark" : "trash", action: job.status == .downloading ? cancel : remove)
+                    .labelStyle(.iconOnly)
+                    .help(job.status == .downloading ? "Cancel download" : "Remove from queue")
+            }
+            if job.status == .downloading || job.progress > 0 {
+                ProgressView(value: job.progress)
+                HStack {
+                    Text("\(Int(job.progress * 100))%")
+                    if !job.speed.isEmpty { Text(job.speed) }
+                    if !job.eta.isEmpty { Text("ETA \(job.eta)") }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+            if let errorMessage = job.errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 5)
+        .contextMenu { Button("Remove from Queue", systemImage: "trash", action: remove) }
+    }
+}

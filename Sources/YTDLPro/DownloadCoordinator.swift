@@ -4,6 +4,14 @@ import Foundation
 final class DownloadCoordinator: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     @Published private(set) var tools = ToolStatus()
+    @Published var options = DownloadOptions()
+    @Published var globalOutputFolder = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Downloads", isDirectory: true).path
+    @Published private(set) var videoInfo: VideoInfo?
+    @Published private(set) var inspectedURL: URL?
+    @Published private(set) var isInspecting = false
+    @Published private(set) var infoError: String?
+    @Published private(set) var isUpdatingYtDlp = false
 
     private var tasks: [UUID: Task<Void, Never>] = [:]
 
@@ -15,13 +23,60 @@ final class DownloadCoordinator: ObservableObject {
         tools = await ToolDiscovery.locate()
     }
 
+    func updateYtDlp() {
+        guard !isUpdatingYtDlp else { return }
+        isUpdatingYtDlp = true
+        Task {
+            _ = try? await ShellProcess.run(command: "brew upgrade yt-dlp")
+            await refreshTools()
+            isUpdatingYtDlp = false
+        }
+    }
+
     func addURLs(from text: String) {
-        let urls = text
-            .split(whereSeparator: \.isNewline)
+        let urls = parseURLs(text)
+        jobs.append(contentsOf: urls.map(DownloadJob.init(url:)))
+        if let firstURL = urls.first {
+            Task { await inspect(url: firstURL) }
+        }
+    }
+
+    func inspect(from text: String) {
+        guard let url = parseURLs(text).first else {
+            infoError = "Enter a valid http or https video URL."
+            return
+        }
+        Task { await inspect(url: url) }
+    }
+
+    func commandPreview(for urlText: String) -> String {
+        let url = parseURLs(urlText).first ?? inspectedURL
+        var arguments = options.arguments(globalOutputFolder: globalOutputFolder)
+        if let url { arguments += ["--", url.absoluteString] }
+        return ShellProcess.command([tools.ytDlp?.path ?? "yt-dlp"] + arguments)
+    }
+
+    private func inspect(url: URL) async {
+        guard let tool = tools.ytDlp else {
+            infoError = "yt-dlp is not installed. Install it with: brew install yt-dlp ffmpeg"
+            return
+        }
+        isInspecting = true
+        infoError = nil
+        inspectedURL = url
+        do {
+            videoInfo = try await VideoInfoService.fetch(url: url, tool: tool)
+        } catch {
+            infoError = error.localizedDescription
+            videoInfo = nil
+        }
+        isInspecting = false
+    }
+
+    private func parseURLs(_ text: String) -> [URL] {
+        text.split(whereSeparator: \.isNewline)
             .compactMap { URL(string: String($0).trimmingCharacters(in: .whitespacesAndNewlines)) }
             .filter { $0.scheme == "https" || $0.scheme == "http" }
-
-        jobs.append(contentsOf: urls.map(DownloadJob.init(url:)))
     }
 
     func startQueued() {
@@ -48,16 +103,7 @@ final class DownloadCoordinator: ObservableObject {
         jobs[index].errorMessage = nil
 
         let url = jobs[index].url.absoluteString
-        let outputTemplate = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Downloads/%(title)s.%(ext)s").path
-        let progressTemplate = "download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
-        let command = ShellProcess.command([
-            tool.path,
-            "--newline",
-            "--progress-template", progressTemplate,
-            "-o", outputTemplate,
-            url
-        ])
+        let command = ShellProcess.command([tool.path] + options.arguments(globalOutputFolder: globalOutputFolder) + ["--", url])
 
         do {
             let status = try await ShellProcess.run(command: command) { [weak self] line in

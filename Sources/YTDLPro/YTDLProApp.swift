@@ -6,8 +6,8 @@ struct YTDLProApp: App {
 
     var body: some Scene {
         WindowGroup("YT-DLPro") {
-            ContentView(downloads: downloads)
-                .frame(minWidth: 720, minHeight: 520)
+            MainWorkspaceView(downloads: downloads)
+                .frame(minWidth: 1020, minHeight: 700)
         }
     }
 }
