@@ -46,6 +46,14 @@ final class DownloadCoordinator: ObservableObject {
             updateSleepActivity()
         }
     }
+    @Published var clipboardWatcherEnabled = false {
+        didSet {
+            UserDefaults.standard.set(clipboardWatcherEnabled, forKey: "clipboardWatcherEnabled")
+            updateClipboardWatcher()
+        }
+    }
+    @Published var clipboardURLToAdd: URL?
+    @Published private(set) var terminalError: String?
     @Published private(set) var videoInfo: VideoInfo?
     @Published private(set) var inspectedURL: URL?
     @Published private(set) var isInspecting = false
@@ -63,6 +71,10 @@ final class DownloadCoordinator: ObservableObject {
     private var pausedJobs: Set<UUID> = []
     private var lastProgressUpdate = Date.distantPast
     private var sleepActivity: NSObjectProtocol?
+    private var clipboardWatcherTask: Task<Void, Never>?
+    private var clipboardWatcherID: UUID?
+    private var clipboardChangeCount = NSPasteboard.general.changeCount
+    private var notificationTokens: [NSObjectProtocol] = []
     private let defaultFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true).path
 
     init() {
@@ -74,6 +86,7 @@ final class DownloadCoordinator: ObservableObject {
         notificationsOnFinish = UserDefaults.standard.object(forKey: "notificationsOnFinish") as? Bool ?? true
         notificationsOnFailure = UserDefaults.standard.object(forKey: "notificationsOnFailure") as? Bool ?? true
         preventSleepWhileDownloading = UserDefaults.standard.object(forKey: "preventSleepWhileDownloading") as? Bool ?? true
+        clipboardWatcherEnabled = UserDefaults.standard.bool(forKey: "clipboardWatcherEnabled")
         history = HistoryStore.load()
         if let document = try? ProfileStore.load() {
             profiles = document.profiles
@@ -88,6 +101,17 @@ final class DownloadCoordinator: ObservableObject {
             persistProfiles(lastUsedProfileID: selectedProfileID)
         }
         installDockProgressView()
+        notificationTokens.append(NotificationCenter.default.addObserver(forName: .ytDlpOpenURLs, object: nil, queue: .main) { [weak self] notification in
+            guard let urls = notification.object as? [URL] else { return }
+            Task { @MainActor in self?.addURLs(from: urls.map(\.absoluteString).joined(separator: "\n")) }
+        })
+        notificationTokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.updateClipboardWatcher() }
+        })
+        notificationTokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.stopClipboardWatcher() }
+        })
+        updateClipboardWatcher()
         Task { await refreshTools() }
     }
 
@@ -285,6 +309,36 @@ final class DownloadCoordinator: ObservableObject {
         return ShellProcess.command([tools.ytDlp?.path ?? "yt-dlp"] + arguments)
     }
 
+    func openCommandInTerminal(for urlText: String) {
+        let command = commandPreview(for: urlText)
+        terminalError = nil
+        Task {
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+                let script = "tell application \"Terminal\" to do script \"\(escaped)\""
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                process.arguments = ["-e", script]
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    return process.terminationStatus == 0 ? nil : "Terminal could not be opened. Check YT-DLPro permissions under System Settings > Privacy & Security > Automation."
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            terminalError = failure
+        }
+    }
+
+    func addClipboardURLToQueue() {
+        guard let clipboardURLToAdd else { return }
+        addURLs(from: clipboardURLToAdd.absoluteString)
+        self.clipboardURLToAdd = nil
+    }
+
+    func dismissClipboardOffer() { clipboardURLToAdd = nil }
+
     private func inspect(url: URL) async {
         guard let tool = tools.ytDlp else {
             infoError = "yt-dlp is not installed. Install it with: brew install yt-dlp ffmpeg"
@@ -299,7 +353,7 @@ final class DownloadCoordinator: ObservableObject {
                 for index in jobs.indices where jobs[index].url == url { jobs[index].title = title }
             }
         } catch {
-            infoError = error.localizedDescription
+            infoError = Self.userFacingDownloadError(error.localizedDescription, cookieBrowser: options.cookieBrowser) ?? error.localizedDescription
             videoInfo = nil
         }
         isInspecting = false
@@ -398,30 +452,23 @@ final class DownloadCoordinator: ObservableObject {
         arguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
         let command = ShellProcess.command([tool.path] + arguments)
         let outputCollector = JobOutputPathCollector()
+        let logCollector = JobOutputLogCollector()
 
         do {
-            let status = try await ShellProcess.run(command: command) { [weak self] line in
-                if !line.hasPrefix("download:") {
-                    let outputPrefix = "YT-DLPRO_PATH:"
-                    if line.hasPrefix(outputPrefix) {
-                        outputCollector.append(String(line.dropFirst(outputPrefix.count)))
-                    }
-                    return
-                }
-                guard line.hasPrefix("download:") else { return }
-                let fields = line.dropFirst("download:".count).split(separator: "|", omittingEmptySubsequences: false)
-                guard let percentField = fields.first else { return }
-                let percent = Double(percentField.filter { $0.isNumber || $0 == "." }) ?? 0
-                let speed = fields.count > 1 ? String(fields[1]).trimmingCharacters(in: .whitespaces) : ""
-                let eta = fields.count > 2 ? String(fields[2]).trimmingCharacters(in: .whitespaces) : ""
-                Task { @MainActor in
-                    guard let self, let currentIndex = self.jobs.firstIndex(where: { $0.id == jobID }) else { return }
-                    guard Date().timeIntervalSince(self.lastProgressUpdate) >= 0.25 else { return }
-                    self.jobs[currentIndex].progress = min(max(percent / 100, 0), 1)
-                    self.jobs[currentIndex].speed = speed
-                    self.jobs[currentIndex].eta = eta
-                    self.updateAggregateProgress()
-                }
+            var status = try await runDownload(command: command, jobID: jobID, outputCollector: outputCollector, logCollector: logCollector)
+            let shouldReencodeMP4 = effectiveOptions.videoContainer == .mp4
+                && effectiveOptions.mediaType != .audioOnly
+                && effectiveOptions.selectedFormatID.isEmpty
+                && !Task.isCancelled
+                && Self.hasNoCompatibleFormatError(logCollector.value)
+
+            if status != 0, shouldReencodeMP4 {
+                outputCollector.clear()
+                var fallbackArguments = effectiveOptions.arguments(globalOutputFolder: globalOutputFolder, forceMP4Reencode: true)
+                if let ffmpeg = tools.ffmpeg { fallbackArguments += ["--ffmpeg-location", ffmpeg.path] }
+                fallbackArguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
+                let fallbackCommand = ShellProcess.command([tool.path] + fallbackArguments)
+                status = try await runDownload(command: fallbackCommand, jobID: jobID, outputCollector: outputCollector, logCollector: logCollector)
             }
 
             guard let currentIndex = jobs.firstIndex(where: { $0.id == jobID }) else { return }
@@ -446,19 +493,78 @@ final class DownloadCoordinator: ObservableObject {
                 if notificationsOnFinish { sendNotification(title: "Download complete", body: job.title) }
             } else {
                 jobs[currentIndex].status = .failed
-                jobs[currentIndex].errorMessage = "yt-dlp exited with status \(status)."
+                jobs[currentIndex].errorMessage = Self.userFacingDownloadError(logCollector.value, cookieBrowser: job.options.cookieBrowser)
+                    ?? "yt-dlp exited with status \(status)."
                 if notificationsOnFailure { sendNotification(title: "Download failed", body: job.title) }
             }
         } catch {
             if let currentIndex = jobs.firstIndex(where: { $0.id == jobID }) {
                 jobs[currentIndex].status = Task.isCancelled ? (pausedJobs.contains(jobID) ? .paused : .cancelled) : .failed
-                jobs[currentIndex].errorMessage = Task.isCancelled ? nil : error.localizedDescription
+                jobs[currentIndex].errorMessage = Task.isCancelled ? nil : Self.userFacingDownloadError(error.localizedDescription, cookieBrowser: job.options.cookieBrowser) ?? error.localizedDescription
             }
         }
         tasks[jobID] = nil
         updateSleepActivity()
         updateAggregateProgress(force: true)
         scheduleQueuedDownloads()
+    }
+
+    private func runDownload(
+        command: String,
+        jobID: UUID,
+        outputCollector: JobOutputPathCollector,
+        logCollector: JobOutputLogCollector
+    ) async throws -> Int32 {
+        try await ShellProcess.run(command: command) { [weak self] line in
+            if !line.hasPrefix("download:") {
+                let outputPrefix = "YT-DLPRO_PATH:"
+                if line.hasPrefix(outputPrefix) {
+                    outputCollector.append(String(line.dropFirst(outputPrefix.count)))
+                } else {
+                    logCollector.append(line)
+                }
+                return
+            }
+            let fields = line.dropFirst("download:".count).split(separator: "|", omittingEmptySubsequences: false)
+            guard let percentField = fields.first else { return }
+            let percent = Double(percentField.filter { $0.isNumber || $0 == "." }) ?? 0
+            let speed = fields.count > 1 ? String(fields[1]).trimmingCharacters(in: .whitespaces) : ""
+            let eta = fields.count > 2 ? String(fields[2]).trimmingCharacters(in: .whitespaces) : ""
+            Task { @MainActor in
+                guard let self, let currentIndex = self.jobs.firstIndex(where: { $0.id == jobID }) else { return }
+                guard Date().timeIntervalSince(self.lastProgressUpdate) >= 0.25 else { return }
+                self.jobs[currentIndex].progress = min(max(percent / 100, 0), 1)
+                self.jobs[currentIndex].speed = speed
+                self.jobs[currentIndex].eta = eta
+                self.updateAggregateProgress()
+            }
+        }
+    }
+
+    private static func hasNoCompatibleFormatError(_ output: String) -> Bool {
+        let normalized = output.lowercased()
+        return normalized.contains("requested format is not available") || normalized.contains("no video formats found")
+    }
+
+    nonisolated static func userFacingDownloadError(_ output: String, cookieBrowser: CookieBrowser) -> String? {
+        let normalized = output.lowercased()
+        if cookieBrowser == .safari,
+           normalized.contains("operation not permitted") || normalized.contains("permission denied") || normalized.contains("could not copy cookies") || normalized.contains("failed to decrypt") {
+            return "Safari cookies could not be read. Enable YT-DLPro in System Settings > Privacy & Security > Full Disk Access, then quit and reopen the app."
+        }
+        if normalized.contains("age-restricted") || normalized.contains("sign in to confirm your age") || normalized.contains("confirm your age") {
+            return "This video is age-restricted. Enable Safari cookies in YT-DLPro settings and grant Full Disk Access, or choose another browser with an authenticated session."
+        }
+        if normalized.contains("private video") || normalized.contains("video is private") || normalized.contains("private video") {
+            return "This video is private or unavailable to the current account. Use cookies from an account with permission to view it."
+        }
+        if normalized.contains("not available in your country") || normalized.contains("geo-restricted") || normalized.contains("geographic restriction") || normalized.contains("blocked in your country") {
+            return "This video is geo-blocked for your current network location. Try a permitted network location or a proxy you are authorized to use."
+        }
+        if normalized.contains("ffmpeg not found") || normalized.contains("ffmpeg is not installed") || normalized.contains("ffmpeg is required") || normalized.contains("ffmpeg/ffprobe not found") {
+            return "This option requires ffmpeg. Install it with `brew install ffmpeg` or use Settings > Download tools."
+        }
+        return nil
     }
 
     private func loadSelectedProfile() {
@@ -543,6 +649,39 @@ final class DownloadCoordinator: ObservableObject {
         NSApp.dockTile.display()
     }
 
+    private func updateClipboardWatcher() {
+        guard clipboardWatcherEnabled, NSApp.isActive else {
+            stopClipboardWatcher()
+            return
+        }
+        guard clipboardWatcherTask == nil else { return }
+        clipboardChangeCount = NSPasteboard.general.changeCount
+        let watcherID = UUID()
+        clipboardWatcherID = watcherID
+        clipboardWatcherTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.clipboardWatcherEnabled, NSApp.isActive, !Task.isCancelled else { break }
+                let pasteboard = NSPasteboard.general
+                guard pasteboard.changeCount != self.clipboardChangeCount else { continue }
+                self.clipboardChangeCount = pasteboard.changeCount
+                guard let text = pasteboard.string(forType: .string),
+                      let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      url.scheme == "http" || url.scheme == "https" else { continue }
+                self.clipboardURLToAdd = url
+            }
+            guard self?.clipboardWatcherID == watcherID else { return }
+            self?.clipboardWatcherID = nil
+            self?.clipboardWatcherTask = nil
+        }
+    }
+
+    private func stopClipboardWatcher() {
+        clipboardWatcherID = nil
+        clipboardWatcherTask?.cancel()
+        clipboardWatcherTask = nil
+    }
+
     private func updateSleepActivity() {
         let hasActiveDownloads = jobs.contains { $0.status == .downloading }
         if preventSleepWhileDownloading, hasActiveDownloads, sleepActivity == nil {
@@ -552,6 +691,10 @@ final class DownloadCoordinator: ObservableObject {
             self.sleepActivity = nil
         }
     }
+}
+
+extension Notification.Name {
+    static let ytDlpOpenURLs = Notification.Name("YT-DLPro.OpenURLs")
 }
 
 private extension String {
@@ -568,9 +711,32 @@ private final class JobOutputPathCollector: @unchecked Sendable {
         lock.unlock()
     }
 
+    func clear() {
+        lock.lock()
+        path = nil
+        lock.unlock()
+    }
+
     var value: String? {
         lock.lock()
         defer { lock.unlock() }
         return path
+    }
+}
+
+private final class JobOutputLogCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.joined(separator: "\n")
     }
 }

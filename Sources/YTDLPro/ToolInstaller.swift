@@ -3,10 +3,10 @@ import Foundation
 
 enum ToolInstaller {
     static let binaryDirectory = ToolDiscovery.fallbackDirectory
-    private static let ffmpegRelease = "b6.1.1"
 
     static func installMissing(
         _ missingNames: [String],
+        in binaryDirectory: URL = binaryDirectory,
         onProgress: @escaping @Sendable (String, Double, String) -> Void
     ) async throws {
         let fileManager = FileManager.default
@@ -56,34 +56,22 @@ enum ToolInstaller {
     private static func asset(named name: String) throws -> ToolAsset {
         switch name {
         case "yt-dlp":
-            let baseURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/")!
-            let sumsURL = baseURL.appendingPathComponent("SHA2-256SUMS")
-            let binaryURL = baseURL.appendingPathComponent("yt-dlp_macos")
-            return ToolAsset(url: binaryURL, versionArguments: ["--version"], checksumURL: sumsURL)
-        case "ffmpeg", "ffprobe":
-            let architecture = ToolArchitecture.current.rawValue
-            let baseURL = URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/\(ffmpegRelease)/")!
-            let filename = "\(name)-darwin-\(architecture)"
-            let checksum: String
-            let licenseURL: URL?
-            if name == "ffmpeg", architecture == "arm64" {
-                checksum = "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584"
-                licenseURL = baseURL.appendingPathComponent("darwin-arm64.LICENSE")
-            } else if name == "ffmpeg" {
-                checksum = "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894"
-                licenseURL = baseURL.appendingPathComponent("darwin-x64.LICENSE")
-            } else if architecture == "arm64" {
-                checksum = "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64"
-                licenseURL = nil
-            } else {
-                checksum = "fa3add0ce901f7241abe0dfc0155d958fc834aca3f8ce61f87cc712ae669c1e0"
-                licenseURL = nil
-            }
             return ToolAsset(
-                url: baseURL.appendingPathComponent(filename),
+                url: ToolDownloadConfiguration.ytDlpBinaryURL,
+                versionArguments: ["--version"],
+                checksumURL: ToolDownloadConfiguration.ytDlpChecksumsURL,
+                checksumFileName: "yt-dlp_macos"
+            )
+        case "ffmpeg", "ffprobe":
+            guard let assets = ToolDownloadConfiguration.ffmpegByArchitecture[.current] else {
+                throw ToolInstallError.unsupportedTool("\(name) for \(ToolArchitecture.current.rawValue)")
+            }
+            let isFFmpeg = name == "ffmpeg"
+            return ToolAsset(
+                url: isFFmpeg ? assets.ffmpegURL : assets.ffprobeURL,
                 versionArguments: ["-version"],
-                sha256: checksum,
-                licenseURL: licenseURL
+                sha256: isFFmpeg ? assets.ffmpegSHA256 : assets.ffprobeSHA256,
+                licenseURL: isFFmpeg ? assets.licenseURL : nil
             )
         default:
             throw ToolInstallError.unsupportedTool(name)
@@ -106,7 +94,7 @@ enum ToolInstaller {
         if let sha256 = asset.sha256 { return sha256 }
         guard let checksumURL = asset.checksumURL else { return nil }
         let (data, _) = try await URLSession.shared.data(from: checksumURL)
-        guard let checksum = checksum(in: String(decoding: data, as: UTF8.self), for: name) else {
+        guard let checksum = checksum(in: String(decoding: data, as: UTF8.self), for: asset.checksumFileName ?? name) else {
             throw ToolInstallError.checksumUnavailable(name)
         }
         return checksum
@@ -140,13 +128,15 @@ private struct ToolAsset {
     let versionArguments: [String]
     var sha256: String?
     var checksumURL: URL?
+    var checksumFileName: String?
     var licenseURL: URL?
 
-    init(url: URL, versionArguments: [String], sha256: String? = nil, checksumURL: URL? = nil, licenseURL: URL? = nil) {
+    init(url: URL, versionArguments: [String], sha256: String? = nil, checksumURL: URL? = nil, checksumFileName: String? = nil, licenseURL: URL? = nil) {
         self.url = url
         self.versionArguments = versionArguments
         self.sha256 = sha256
         self.checksumURL = checksumURL
+        self.checksumFileName = checksumFileName
         self.licenseURL = licenseURL
     }
 }

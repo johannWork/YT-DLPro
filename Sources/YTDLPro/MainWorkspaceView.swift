@@ -38,6 +38,15 @@ struct MainWorkspaceView: View {
         .sheet(isPresented: $isProfileManagerPresented) {
             ProfileManagerView(downloads: downloads)
         }
+        .alert("Add copied link to the queue?", isPresented: Binding(
+            get: { downloads.clipboardURLToAdd != nil },
+            set: { if !$0 { downloads.dismissClipboardOffer() } }
+        )) {
+            Button("Not Now", role: .cancel) { downloads.dismissClipboardOffer() }
+            Button("Add") { downloads.addClipboardURLToQueue() }
+        } message: {
+            Text(downloads.clipboardURLToAdd?.absoluteString ?? "")
+        }
     }
 
     private var sidebar: some View {
@@ -212,18 +221,25 @@ struct MainWorkspaceView: View {
                 Label("Command Preview", systemImage: "chevron.left.forwardslash.chevron.right")
                     .font(.caption.weight(.semibold))
                 Spacer()
-                Button("Copy", systemImage: "doc.on.doc") {
+                Button("Open in Terminal", systemImage: "terminal") {
+                    downloads.openCommandInTerminal(for: urlInput)
+                }
+                .help("Run the exact command in Terminal.app")
+                Button("Copy as shell command", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(command, forType: .string)
                 }
                 .labelStyle(.iconOnly)
-                .help("Copy command")
+                .help("Copy as shell command")
             }
             Text(command)
                 .font(.system(.caption, design: .monospaced))
                 .lineLimit(2)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let error = downloads.terminalError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

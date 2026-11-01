@@ -31,7 +31,7 @@ struct ToolStatus {
     }
 }
 
-enum ToolArchitecture: String {
+enum ToolArchitecture: String, Hashable {
     case arm64
     case x64
 
@@ -47,6 +47,36 @@ enum ToolArchitecture: String {
         return .x64
 #endif
     }
+}
+
+struct FFmpegToolAssets {
+    let ffmpegURL: URL
+    let ffprobeURL: URL
+    let ffmpegSHA256: String
+    let ffprobeSHA256: String
+    let licenseURL: URL
+}
+
+enum ToolDownloadConfiguration {
+    static let ytDlpBinaryURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!
+    static let ytDlpChecksumsURL = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS")!
+    static let ffmpegRelease = "b6.1.1"
+    static let ffmpegByArchitecture: [ToolArchitecture: FFmpegToolAssets] = [
+        .arm64: FFmpegToolAssets(
+            ffmpegURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64")!,
+            ffprobeURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64")!,
+            ffmpegSHA256: "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584",
+            ffprobeSHA256: "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64",
+            licenseURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/darwin-arm64.LICENSE")!
+        ),
+        .x64: FFmpegToolAssets(
+            ffmpegURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64")!,
+            ffprobeURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-x64")!,
+            ffmpegSHA256: "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894",
+            ffprobeSHA256: "fa3add0ce901f7241abe0dfc0155d958fc834aca3f8ce61f87cc712ae669c1e0",
+            licenseURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/darwin-x64.LICENSE")!
+        )
+    ]
 }
 
 enum ToolDiscovery {

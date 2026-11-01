@@ -61,7 +61,6 @@ enum ProfileStore {
         var resolveVideo = DownloadOptions()
         resolveVideo.videoContainer = .mp4
         resolveVideo.codec = .h264
-        resolveVideo.extraArguments = "--recode-video mp4 --postprocessor-args \"VideoConvertor+ffmpeg_o:-c:v libx264 -c:a aac\""
         profiles.append(DownloadProfile(name: "Resolve H.264 MP4 (AAC)", options: resolveVideo, isBuiltIn: true))
 
         var resolveAudio = DownloadOptions()

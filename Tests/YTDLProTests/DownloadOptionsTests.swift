@@ -9,7 +9,10 @@ final class DownloadOptionsTests: XCTestCase {
         let arguments = options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
         let formatIndex = arguments.firstIndex(of: "-f")!
 
-        XCTAssertEqual(arguments[formatIndex + 1], "bestvideo[height<=1080]+bestaudio/best[height<=1080]")
+        XCTAssertEqual(
+            arguments[formatIndex + 1],
+            "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[ext=mp4][height<=1080][vcodec^=avc1][acodec^=mp4a]"
+        )
     }
 
     func testAudioConversionIncludesSelectedQualityAndSampleRate() {
@@ -129,5 +132,83 @@ final class DownloadOptionsTests: XCTestCase {
         XCTAssertEqual(ProfileStore.resolvedFolder(perDownload: "/download", profile: "/profile", global: "/global"), "/download")
         XCTAssertEqual(ProfileStore.resolvedFolder(perDownload: "", profile: "/profile", global: "/global"), "/profile")
         XCTAssertEqual(ProfileStore.resolvedFolder(perDownload: "", profile: "", global: "/global"), "/global")
+    }
+
+    func testMP4DefaultsRequireH264AndAACStreams() {
+        var options = DownloadOptions()
+        options.videoContainer = .mp4
+        options.resolution = .p1080
+
+        let arguments = options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+        let selectorIndex = arguments.firstIndex(of: "-f")!
+
+        XCTAssertEqual(
+            arguments[selectorIndex + 1],
+            "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[ext=mp4][height<=1080][vcodec^=avc1][acodec^=mp4a]"
+        )
+        XCTAssertFalse(arguments[selectorIndex + 1].contains("av01"))
+        XCTAssertFalse(arguments[selectorIndex + 1].contains("vp9"))
+    }
+
+    func testMP4KeepsExplicitAV1CodecChoice() {
+        var options = DownloadOptions()
+        options.videoContainer = .mp4
+        options.codec = .av1
+
+        let arguments = options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+        let selectorIndex = arguments.firstIndex(of: "-f")!
+
+        XCTAssertTrue(arguments[selectorIndex + 1].contains("[vcodec*=av01]"))
+        XCTAssertTrue(arguments[selectorIndex + 1].contains("[acodec^=mp4a]"))
+    }
+
+    func testMP4FallbackForcesH264AACEncodingThroughMKVIntermediate() {
+        var options = DownloadOptions()
+        options.videoContainer = .mp4
+
+        let arguments = options.arguments(globalOutputFolder: "/tmp/YT-DLPro", forceMP4Reencode: true)
+
+        XCTAssertTrue(arguments.contains("mkv"))
+        XCTAssertTrue(arguments.contains("--recode-video"))
+        XCTAssertTrue(arguments.contains("mp4"))
+        XCTAssertTrue(arguments.contains("VideoConvertor+ffmpeg_o:-c:v libx264 -c:a aac"))
+    }
+
+    func testResolveProfilesForceExpectedCodecs() {
+        let profiles = ProfileStore.builtIns()
+        let video = profiles.first { $0.name == "Resolve H.264 MP4 (AAC)" }!
+        let audio = profiles.first { $0.name == "Resolve WAV audio" }!
+        let videoArguments = video.options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+        let videoArgumentsText = videoArguments.joined(separator: " ")
+
+        XCTAssertTrue(videoArgumentsText.contains("[vcodec*=avc1]"))
+        XCTAssertTrue(videoArgumentsText.contains("[acodec^=mp4a]"))
+        XCTAssertTrue(video.options.extraArguments.isEmpty)
+        XCTAssertEqual(audio.options.audioFormat, .wav)
+    }
+
+    func testClipRangeUsesDownloadSectionsArgument() {
+        var options = DownloadOptions()
+        options.clipStart = "00:01"
+        options.clipEnd = "00:05"
+
+        let arguments = options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+        let sectionIndex = arguments.firstIndex(of: "--download-sections")!
+
+        XCTAssertEqual(arguments[sectionIndex + 1], "*00:01-00:05")
+        XCTAssertTrue(arguments.contains("--force-keyframes-at-cuts"))
+    }
+
+    func testSafariPermissionErrorNamesFullDiskAccessPath() {
+        let message = DownloadCoordinator.userFacingDownloadError("Operation not permitted while reading Safari cookies", cookieBrowser: .safari)
+
+        XCTAssertTrue(message?.contains("System Settings > Privacy & Security > Full Disk Access") == true)
+    }
+
+    func testCommonExtractorErrorsAreActionable() {
+        XCTAssertTrue(DownloadCoordinator.userFacingDownloadError("Sign in to confirm your age", cookieBrowser: .none)?.contains("age-restricted") == true)
+        XCTAssertTrue(DownloadCoordinator.userFacingDownloadError("This video is private", cookieBrowser: .none)?.contains("private") == true)
+        XCTAssertTrue(DownloadCoordinator.userFacingDownloadError("Not available in your country", cookieBrowser: .none)?.contains("geo-blocked") == true)
+        XCTAssertTrue(DownloadCoordinator.userFacingDownloadError("ffmpeg is not installed", cookieBrowser: .none)?.contains("brew install ffmpeg") == true)
     }
 }

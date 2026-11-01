@@ -78,6 +78,10 @@ struct ToolSettingsView: View {
                 Toggle("Notify when downloads fail", isOn: $downloads.notificationsOnFailure)
                 Toggle("Prevent sleep while downloads are active", isOn: $downloads.preventSleepWhileDownloading)
             }
+
+            Section("Clipboard") {
+                Toggle("Offer copied video links", isOn: $downloads.clipboardWatcherEnabled)
+            }
         }
         .formStyle(.grouped)
         .padding(16)

@@ -136,10 +136,15 @@ struct DownloadOptions: Codable, Equatable {
     var downloadArchive = false
     var extraArguments = ""
 
-    func arguments(globalOutputFolder: String, formatID: String? = nil) -> [String] {
+    func arguments(globalOutputFolder: String, formatID: String? = nil, forceMP4Reencode: Bool = false) -> [String] {
         var result = ["--newline", "--progress-template", "download:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"]
         let chosenID = formatID ?? selectedFormatID
-        if !chosenID.isEmpty {
+        if forceMP4Reencode, mediaType != .audioOnly {
+            let heightFilter = resolution.height.map { "[height<=\($0)]" } ?? ""
+            let fpsFilter = Int(maxFPS).map { "[fps<=\($0)]" } ?? ""
+            let videoSelector = "bestvideo\(heightFilter)\(fpsFilter)"
+            result += ["-f", mediaType == .videoOnly ? videoSelector : "\(videoSelector)+bestaudio"]
+        } else if !chosenID.isEmpty {
             result += ["-f", chosenID]
         } else {
             result += ["-f", formatSelector]
@@ -156,7 +161,13 @@ struct DownloadOptions: Codable, Equatable {
                 result += ["--postprocessor-args", "ExtractAudio+ffmpeg_o:-ar \(sampleRate)"]
             }
         } else {
-            result += ["--merge-output-format", videoContainer.rawValue]
+            result += ["--merge-output-format", forceMP4Reencode && videoContainer == .mp4 ? "mkv" : videoContainer.rawValue]
+            if forceMP4Reencode, videoContainer == .mp4 {
+                result += ["--recode-video", "mp4"]
+                let videoEncoder = ffmpegVideoEncoder
+                let audioArguments = mediaType == .videoOnly ? "-c:v \(videoEncoder)" : "-c:v \(videoEncoder) -c:a aac"
+                result += ["--postprocessor-args", "VideoConvertor+ffmpeg_o:\(audioArguments)"]
+            }
         }
 
         if embedThumbnail { result.append("--embed-thumbnail") }
@@ -219,12 +230,34 @@ struct DownloadOptions: Codable, Equatable {
         if mediaType == .audioOnly { return "bestaudio/best" }
         let heightFilter = resolution.height.map { "[height<=\($0)]" } ?? ""
         let fpsFilter = Int(maxFPS).map { "[fps<=\($0)]" } ?? ""
-        let codecFilter = codec.ytDlpFilter.map { "[vcodec*=\($0)]" } ?? ""
+        let videoCodecFilter: String
+        let audioCodecFilter: String
+        if videoContainer == .mp4 {
+            videoCodecFilter = codec.ytDlpFilter.map { "[vcodec*=\($0)]" } ?? "[vcodec^=avc1]"
+            audioCodecFilter = "[acodec^=mp4a]"
+        } else {
+            videoCodecFilter = codec.ytDlpFilter.map { "[vcodec*=\($0)]" } ?? ""
+            audioCodecFilter = ""
+        }
         let quality = resolution == .worst ? "worst" : "best"
-        let video = "\(quality)video\(heightFilter)\(fpsFilter)\(codecFilter)"
-        let fallback = "\(quality)\(heightFilter)\(fpsFilter)\(codecFilter)"
+        let video = "\(quality)video\(heightFilter)\(fpsFilter)\(videoCodecFilter)"
+        let fallback: String
+        if videoContainer == .mp4 {
+            fallback = "\(quality)[ext=mp4]\(heightFilter)\(fpsFilter)\(videoCodecFilter)\(audioCodecFilter)"
+        } else {
+            fallback = "\(quality)\(heightFilter)\(fpsFilter)\(videoCodecFilter)"
+        }
         if mediaType == .videoOnly { return "\(video)/\(fallback)" }
-        return "\(video)+bestaudio/\(fallback)"
+        return "\(video)+bestaudio\(audioCodecFilter)/\(fallback)"
+    }
+
+    private var ffmpegVideoEncoder: String {
+        switch codec {
+        case .any, .h264: "libx264"
+        case .h265: "libx265"
+        case .vp9: "libvpx-vp9"
+        case .av1: "libaom-av1"
+        }
     }
 
     private var extraArgumentTokens: [String] {

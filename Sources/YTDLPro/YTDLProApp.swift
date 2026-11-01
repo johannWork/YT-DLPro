@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct YTDLProApp: App {
+    @NSApplicationDelegateAdaptor(AppURLDelegate.self) private var appDelegate
     @StateObject private var downloads = DownloadCoordinator()
 
     var body: some Scene {
