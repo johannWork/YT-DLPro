@@ -8,12 +8,61 @@ Native macOS video downloader interface for `yt-dlp`, `ffmpeg`, and Deno.
 2. Drag `YT-DLPro.app` to the Applications folder.
 3. On first launch, right-click the app and choose **Open**. If Gatekeeper still blocks it, use **System Settings > Privacy & Security > Open Anyway**, or run `xattr -cr /Applications/YT-DLPro.app` in Terminal.
 
-**Disclaimer:** You are responsible for following the laws and site terms where you live. YT-DLPro does not bundle `yt-dlp` or `ffmpeg`.
+**Disclaimer:** You are responsible for following the laws and site terms where you live. YT-DLPro does not bundle `yt-dlp`, `ffmpeg`, or Deno.
+
+<!-- Add a screenshot: ![YT-DLPro main window](docs/screenshot.png) -->
+
+## Features
+
+**Downloading**
+- Video + audio, video only, or audio only
+- Video containers: MP4, MKV, WebM, MOV
+- Audio formats: MP3, M4A, AAC, Opus, FLAC, WAV, OGG
+- Resolutions from 144p up to 4320p, plus Best and Worst
+- Codec preference (H.264, H.265, VP9, AV1) and max FPS
+- Audio bitrate, VBR quality, and sample rate
+- MP4 defaults to H.264 + AAC so files import cleanly into editors like DaVinci Resolve, with an automatic ffmpeg re-encode if no compatible stream exists
+- Clip downloads with start and end times
+- Playlist support: whole playlist or single video, item range, reverse order, numbering
+- Format table showing every available format, with manual format selection
+
+**Queue and progress**
+- Paste multiple links, or drag and drop links onto the window or Dock icon
+- Per-item progress, speed, and ETA
+- Pause, resume, retry, cancel, and reorder
+- Overall download bar and Dock icon progress
+- Adjustable number of simultaneous downloads
+
+**Profiles**
+- Save, load, rename, duplicate, delete, import, and export profiles
+- Built-in profiles: MP3 320, MP4 1080p, Best Video 4K, Audio M4A Best, Podcast MP3 128, Resolve H.264 MP4 (AAC), and Resolve WAV audio
+- Per-download profile override
+- Remembers your last used profile
+
+**Extras**
+- Embed thumbnail, metadata, and chapters
+- Subtitles: language choice, auto-generated captions, embed or save separately (SRT, VTT, ASS)
+- SponsorBlock: mark or remove segments by category
+- Cookies from Safari, Chrome, Firefox, or Brave
+- Download archive to skip videos you already have
+- Rate limit, retries, concurrent fragments, and proxy
+- Filename templates, subfolders by uploader or playlist, and a date filter
+- Free-form extra arguments field
+
+**Convenience**
+- Live command preview with copy and Open in Terminal
+- Download history with re-download and reveal in Finder
+- Global default download folder, with per-profile and per-download overrides
+- Optional clipboard watcher that offers to add copied links
+- Notifications and sleep prevention while downloads run
+- Clear messages for age-restricted, private, geo-blocked, and missing-ffmpeg errors, and for Safari Full Disk Access
+- First-launch setup that installs the required tools without Terminal
+- Universal app (Apple Silicon and Intel)
 
 ## Requirements
 
 - macOS 14 or newer
-- Xcode with the macOS SDK
+- Xcode with the macOS SDK (only needed to build from source)
 - Network access for video metadata and downloads
 
 YT-DLPro does not bundle these tools in the app. On first launch, **Set up now** can install standalone copies in `~/Library/Application Support/YT-DLPro/bin` when system copies are not found.
@@ -69,14 +118,14 @@ xattr -cr "/Applications/YT-DLPro.app"
 
 On first use, select **Set up now** to install yt-dlp, ffmpeg/ffprobe, and Deno without using Terminal. The standalone yt-dlp binary is downloaded from the official yt-dlp GitHub release. Static FFmpeg and ffprobe binaries come from the `ffmpeg-static` release assets: arm64 uses `ffmpeg-darwin-arm64`; Intel uses `ffmpeg-darwin-x64`. Deno comes from official `denoland/deno` release ZIPs. The installer verifies SHA-256 checksums, sets executable permissions, removes quarantine, and checks tool versions before use. FFmpeg licensing information is saved alongside the fallback tools. If a download host is unreachable, setup offers a file picker for a manually downloaded executable; Deno ZIPs must be extracted first.
 
-Current yt-dlp YouTube guidance recommends Deno (minimum supported 2.3.0) as the JavaScript runtime. YT-DLPro discovers system Deno or installs a fallback copy, passes its path explicitly, and enables yt-dlp's official EJS scripts from GitHub. The new setup screen replaces the earlier warning banner and appears when the required tools are not found.
+Current yt-dlp YouTube guidance recommends Deno (minimum supported 2.3.0) as the JavaScript runtime. YT-DLPro discovers system Deno or installs a fallback copy, passes its path explicitly, and enables yt-dlp's official EJS scripts from GitHub. The setup screen appears when the required tools are not found.
 
 ## Terminal Features
 
 - Tools are discovered through a login shell so Homebrew installations are visible; with **Prefer system tools** selected, they are used before built-in copies.
 - **Prefer system tools / Prefer built-in copies** switches which installation source takes priority.
 - System `yt-dlp` copies are updated through Homebrew; built-in copies use `yt-dlp -U`.
-- **Open in Terminal** opens the selected tool's location, and **Copy as shell command** copies a ready-to-run command.
+- **Open in Terminal** and **Copy as shell command** give you the exact yt-dlp command the app runs.
 - The setup screen appears only when no required tools are found.
 
 ## Tests
@@ -87,3 +136,12 @@ xcodebuild -scheme YTDLPro -destination 'platform=macOS,arch=arm64' -derivedData
 ```
 
 Real test media, when generated, is kept under `build/DownloadTests` and is not included in Git or the app ZIP.
+
+## Where files are stored
+
+- Profiles, history, settings, and downloaded tools: `~/Library/Application Support/YT-DLPro/`
+- Downloads: your chosen output folder (default `~/Downloads`)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
