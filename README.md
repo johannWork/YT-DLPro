@@ -1,7 +1,3 @@
-# YT-DLPro
-
-Native macOS video downloader interface for `yt-dlp`, `ffmpeg`, and Deno.
-
 <p align="center">
   <img src="Resources/YT-DLPro.iconset/icon_512x512.png" alt="YT-DLPro logo" width="128">
 </p>
@@ -17,6 +13,7 @@ Native macOS video downloader interface for `yt-dlp`, `ffmpeg`, and Deno.
 3. On first launch, right-click the app and choose **Open**. If Gatekeeper still blocks it, use **System Settings > Privacy & Security > Open Anyway**, or run `xattr -cr /Applications/YT-DLPro.app` in Terminal.
 
 **Disclaimer:** You are responsible for following the laws and site terms where you live. YT-DLPro does not bundle `yt-dlp`, `ffmpeg`, or Deno.
+
 
 <!-- Add a screenshot: ![YT-DLPro main window](docs/screenshot.png) -->
 
