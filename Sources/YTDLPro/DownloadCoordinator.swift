@@ -123,6 +123,11 @@ final class DownloadCoordinator: ObservableObject {
         profiles.first { $0.id == selectedProfileID }
     }
 
+    var selectedProfileHasChanges: Bool {
+        guard let selectedProfile else { return false }
+        return options != selectedProfile.options
+    }
+
     func refreshTools() async {
         let preference = toolPreference
         let discoveredTools = await ToolDiscovery.locate(preference: preference)
@@ -238,6 +243,23 @@ final class DownloadCoordinator: ObservableObject {
         if let profileID { persistProfiles(lastUsedProfileID: profileID) }
     }
 
+    func saveChangesToSelectedProfile() {
+        guard let selectedProfile,
+              let index = profiles.firstIndex(where: { $0.id == selectedProfile.id }) else { return }
+        var savedOptions = options
+        let updatedFolder = savedOptions.outputFolder
+        savedOptions.outputFolder = ""
+        profiles[index].options = savedOptions
+        if !updatedFolder.isEmpty { profiles[index].outputFolder = updatedFolder }
+        options = savedOptions
+        reloadQueuedJobs(for: profiles[index])
+        persistProfiles()
+    }
+
+    func revertChangesToSelectedProfile() {
+        loadSelectedProfile()
+    }
+
     func saveCurrentProfile(named name: String, outputFolder: String = "") {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         var savedOptions = options
@@ -331,16 +353,13 @@ final class DownloadCoordinator: ObservableObject {
 
     func applyProfile(_ profileID: UUID?, to jobID: UUID) {
         guard let profileID, let profile = profiles.first(where: { $0.id == profileID }),
-              let index = jobs.firstIndex(where: { $0.id == jobID }), jobs[index].status != .downloading else { return }
-        jobs[index].options = profile.options
-        jobs[index].profileID = profile.id
-        jobs[index].profileName = profile.name
-        jobs[index].profileOutputFolder = profile.outputFolder
+              let index = jobs.firstIndex(where: { $0.id == jobID }), !jobs[index].hasStarted else { return }
+        jobs[index].apply(profile: profile)
     }
 
     func setDownloadFolder(_ folder: String, for jobID: UUID) {
-        guard let index = jobs.firstIndex(where: { $0.id == jobID }), jobs[index].status != .downloading else { return }
-        jobs[index].options.outputFolder = folder
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }), !jobs[index].hasStarted else { return }
+        jobs[index].perDownloadFolderOverride = folder
     }
 
     func addURLs(from text: String) {
@@ -362,17 +381,7 @@ final class DownloadCoordinator: ObservableObject {
 
     func commandPreview(for urlText: String) -> String {
         let url = parseURLs(urlText).first ?? inspectedURL
-        var previewOptions = options
-        previewOptions.outputFolder = ProfileStore.resolvedFolder(
-            perDownload: options.outputFolder,
-            profile: selectedProfile?.outputFolder ?? "",
-            global: globalOutputFolder
-        )
-        var arguments = previewOptions.arguments(globalOutputFolder: globalOutputFolder)
-        if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
-        if let jsRuntime = tools.jsRuntime {
-            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
-        }
+        var arguments = ytDlpArguments(for: options, profileFolder: selectedProfile?.outputFolder ?? "")
         if let url { arguments += ["--", url.absoluteString] }
         return ShellProcess.command([tools.ytDlp?.path ?? "yt-dlp"] + arguments)
     }
@@ -496,6 +505,8 @@ final class DownloadCoordinator: ObservableObject {
         let queued = jobs.filter { $0.status == .queued && tasks[$0.id] == nil }.prefix(availableSlots)
         for job in queued {
             let jobID = job.id
+            guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { continue }
+            jobs[index].prepareToStart(options: options, profile: selectedProfile)
             tasks[jobID] = Task { await download(jobID, using: tool) }
         }
     }
@@ -509,18 +520,9 @@ final class DownloadCoordinator: ObservableObject {
 
         let job = jobs[index]
         let url = job.url.absoluteString
-        var effectiveOptions = job.options
-        effectiveOptions.outputFolder = ProfileStore.resolvedFolder(
-            perDownload: job.options.outputFolder,
-            profile: job.profileOutputFolder ?? "",
-            global: globalOutputFolder
-        )
-        var arguments = effectiveOptions.arguments(globalOutputFolder: globalOutputFolder)
-        if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
-        if let jsRuntime = tools.jsRuntime {
-            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
-        }
-        arguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
+        let effectiveOptions = resolvedOptions(for: job.options, profileFolder: job.profileOutputFolder ?? "")
+        var arguments = ytDlpArguments(for: job.options, profileFolder: job.profileOutputFolder ?? "")
+        arguments += ["--", url]
         let command = ShellProcess.command([tool.path] + arguments)
         let outputCollector = JobOutputPathCollector()
         let logCollector = JobOutputLogCollector()
@@ -535,12 +537,12 @@ final class DownloadCoordinator: ObservableObject {
 
             if status != 0, shouldReencodeMP4 {
                 outputCollector.clear()
-                var fallbackArguments = effectiveOptions.arguments(globalOutputFolder: globalOutputFolder, forceMP4Reencode: true)
-                if let ffmpeg = tools.ffmpeg { fallbackArguments += ["--ffmpeg-location", ffmpeg.path] }
-                if let jsRuntime = tools.jsRuntime {
-                    fallbackArguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
-                }
-                fallbackArguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
+                var fallbackArguments = ytDlpArguments(
+                    for: job.options,
+                    profileFolder: job.profileOutputFolder ?? "",
+                    forceMP4Reencode: true
+                )
+                fallbackArguments += ["--", url]
                 let fallbackCommand = ShellProcess.command([tool.path] + fallbackArguments)
                 status = try await runDownload(command: fallbackCommand, jobID: jobID, outputCollector: outputCollector, logCollector: logCollector)
             }
@@ -644,7 +646,42 @@ final class DownloadCoordinator: ObservableObject {
     private func loadSelectedProfile() {
         guard let profile = selectedProfile else { return }
         options = profile.options
+        reloadQueuedJobs(for: profile)
         persistProfiles(lastUsedProfileID: profile.id)
+    }
+
+    private func reloadQueuedJobs(for profile: DownloadProfile) {
+        for index in jobs.indices where jobs[index].status == .queued && !jobs[index].hasStarted {
+            jobs[index].apply(profile: profile)
+        }
+    }
+
+    private func resolvedOptions(for options: DownloadOptions, profileFolder: String) -> DownloadOptions {
+        var resolved = options
+        resolved.outputFolder = ProfileStore.resolvedFolder(
+            perDownload: options.outputFolder,
+            profile: profileFolder,
+            global: globalOutputFolder
+        )
+        return resolved
+    }
+
+    private func ytDlpArguments(
+        for options: DownloadOptions,
+        profileFolder: String,
+        forceMP4Reencode: Bool = false
+    ) -> [String] {
+        let effectiveOptions = resolvedOptions(for: options, profileFolder: profileFolder)
+        var arguments = effectiveOptions.arguments(
+            globalOutputFolder: globalOutputFolder,
+            forceMP4Reencode: forceMP4Reencode
+        )
+        if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
+        if let jsRuntime = tools.jsRuntime {
+            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
+        }
+        arguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s"]
+        return arguments
     }
 
     private func persistProfiles(lastUsedProfileID: UUID? = nil) {

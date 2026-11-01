@@ -67,6 +67,19 @@ struct MainWorkspaceView: View {
                     }
                     .labelStyle(.iconOnly)
                     .help("Manage download profiles")
+                    if downloads.selectedProfileHasChanges {
+                        Text("Modified")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if downloads.selectedProfileHasChanges {
+                    HStack(spacing: 8) {
+                        Button("Save changes to profile") { downloads.saveChangesToSelectedProfile() }
+                            .controlSize(.small)
+                        Button("Revert to profile") { downloads.revertChangesToSelectedProfile() }
+                            .controlSize(.small)
+                    }
                 }
                 HStack {
                     Text("Video URLs").font(.headline)

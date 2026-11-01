@@ -17,6 +17,8 @@ struct DownloadJob: Identifiable {
     var profileID: UUID?
     var profileName: String?
     var profileOutputFolder: String?
+    var perDownloadFolderOverride: String?
+    var hasStarted: Bool
     var outputPath: String?
     var status: DownloadStatus
     var progress: Double
@@ -32,11 +34,33 @@ struct DownloadJob: Identifiable {
         profileID = profile?.id
         profileName = profile?.name
         profileOutputFolder = profile?.outputFolder
+        perDownloadFolderOverride = nil
+        hasStarted = false
         outputPath = nil
         status = .queued
         progress = 0
         speed = ""
         eta = ""
+    }
+
+    mutating func apply(profile: DownloadProfile) {
+        guard !hasStarted else { return }
+        options = profile.options
+        profileID = profile.id
+        profileName = profile.name
+        profileOutputFolder = profile.outputFolder
+    }
+
+    mutating func prepareToStart(options currentOptions: DownloadOptions, profile: DownloadProfile?) {
+        guard !hasStarted else { return }
+        options = currentOptions
+        if let perDownloadFolderOverride {
+            options.outputFolder = perDownloadFolderOverride
+        }
+        profileID = profile?.id
+        profileName = profile?.name
+        profileOutputFolder = profile?.outputFolder
+        hasStarted = true
     }
 }
 

@@ -31,6 +31,92 @@ final class DownloadOptionsTests: XCTestCase {
         XCTAssertTrue(arguments.contains("ExtractAudio+ffmpeg_o:-ar 44100"))
     }
 
+    func testQueuedMP3ProfileUsesCurrentMP4AndResolutionWhenStarted() {
+        let mp3Profile = ProfileStore.builtIns().first { $0.name == "MP3 320" }!
+        var currentOptions = mp3Profile.options
+        currentOptions.mediaType = .videoAndAudio
+        currentOptions.videoContainer = .mp4
+        currentOptions.resolution = .p720
+
+        var job = DownloadJob(url: URL(string: "https://example.com/video")!, options: mp3Profile.options, profile: mp3Profile)
+        job.prepareToStart(options: currentOptions, profile: mp3Profile)
+        let arguments = job.options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+        let formatIndex = arguments.firstIndex(of: "-f")!
+        let formatSelector = arguments[formatIndex + 1]
+
+        XCTAssertFalse(arguments.contains("-x"))
+        XCTAssertEqual(arguments[arguments.firstIndex(of: "--merge-output-format")! + 1], "mp4")
+        XCTAssertTrue(formatSelector.contains("[height<=720]"))
+        XCTAssertTrue(formatSelector.contains("[vcodec^=avc1]"))
+    }
+
+    func testQueuedMP3ProfileUsesCurrentAudioBitrateWhenStarted() {
+        let mp3Profile = ProfileStore.builtIns().first { $0.name == "MP3 320" }!
+        var currentOptions = mp3Profile.options
+        currentOptions.audioBitrate = "192"
+
+        var job = DownloadJob(url: URL(string: "https://example.com/video")!, options: mp3Profile.options, profile: mp3Profile)
+        job.prepareToStart(options: currentOptions, profile: mp3Profile)
+        let arguments = job.options.arguments(globalOutputFolder: "/tmp/YT-DLPro")
+
+        XCTAssertEqual(arguments[arguments.firstIndex(of: "--audio-quality")! + 1], "192K")
+    }
+
+    func testStartSnapshotUsesCurrentFolderClipAndExtraArgumentsButKeepsQueueFolderOverride() {
+        let profile = ProfileStore.builtIns().first { $0.name == "MP4 1080p" }!
+        var currentOptions = profile.options
+        currentOptions.outputFolder = "/tmp/panel-folder"
+        currentOptions.clipStart = "00:01"
+        currentOptions.clipEnd = "00:05"
+        currentOptions.extraArguments = "--no-warnings --socket-timeout 30"
+
+        var job = DownloadJob(url: URL(string: "https://example.com/video")!, options: profile.options, profile: profile)
+        job.perDownloadFolderOverride = "/tmp/queue-folder"
+        job.prepareToStart(options: currentOptions, profile: profile)
+        let arguments = job.options.arguments(globalOutputFolder: "/tmp/global")
+
+        XCTAssertEqual(arguments[arguments.firstIndex(of: "-o")! + 1], "/tmp/queue-folder/%(title)s.%(ext)s")
+        XCTAssertEqual(arguments[arguments.firstIndex(of: "--download-sections")! + 1], "*00:01-00:05")
+        XCTAssertTrue(arguments.contains("--no-warnings"))
+        XCTAssertEqual(arguments[arguments.firstIndex(of: "--socket-timeout")! + 1], "30")
+    }
+
+    func testStartSnapshotUsesPanelFolderInsteadOfSelectedProfileFolder() {
+        let profile = DownloadProfile(name: "Custom folder", options: DownloadOptions(), outputFolder: "/tmp/profile-folder")
+        var currentOptions = profile.options
+        currentOptions.outputFolder = "/tmp/global-folder"
+
+        var job = DownloadJob(url: URL(string: "https://example.com/video")!, options: profile.options, profile: profile)
+        job.prepareToStart(options: currentOptions, profile: profile)
+        let effectiveFolder = ProfileStore.resolvedFolder(
+            perDownload: job.options.outputFolder,
+            profile: job.profileOutputFolder ?? "",
+            global: "/tmp/fallback-folder"
+        )
+
+        XCTAssertEqual(effectiveFolder, "/tmp/global-folder")
+    }
+
+    func testSwitchingProfileReloadsQueuedJobAndStartedSnapshotStaysFixed() {
+        let profiles = ProfileStore.builtIns()
+        let mp3Profile = profiles.first { $0.name == "MP3 320" }!
+        let mp4Profile = profiles.first { $0.name == "MP4 1080p" }!
+        var job = DownloadJob(url: URL(string: "https://example.com/video")!, options: mp3Profile.options, profile: mp3Profile)
+
+        job.apply(profile: mp4Profile)
+        XCTAssertEqual(job.options, mp4Profile.options)
+        XCTAssertEqual(job.profileID, mp4Profile.id)
+        XCTAssertEqual(job.profileName, mp4Profile.name)
+
+        job.prepareToStart(options: mp4Profile.options, profile: mp4Profile)
+        var changedOptions = mp3Profile.options
+        changedOptions.audioBitrate = "128"
+        job.prepareToStart(options: changedOptions, profile: mp3Profile)
+
+        XCTAssertEqual(job.options, mp4Profile.options)
+        XCTAssertEqual(job.profileID, mp4Profile.id)
+    }
+
     func testMetadataDecodesFormatsWithOptionalFields() throws {
         let json = #"{"title":"Sample","thumbnail":"https://example.com/thumb.jpg","duration":65,"formats":[{"format_id":"137","height":1080,"vcodec":"avc1.640028","acodec":"none"},{"format_id":"140","vcodec":"none","acodec":"mp4a.40.2"}]}"#
         let info = try JSONDecoder().decode(VideoInfo.self, from: Data(json.utf8))
