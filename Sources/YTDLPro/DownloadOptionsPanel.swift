@@ -3,6 +3,7 @@ import SwiftUI
 struct DownloadOptionsPanel: View {
     @Binding var options: DownloadOptions
     @Binding var globalOutputFolder: String
+    let profileOutputFolder: String
     let chooseFolder: () -> Void
 
     var body: some View {
@@ -152,8 +153,8 @@ struct DownloadOptionsPanel: View {
 
     private var outputFolderBinding: Binding<String> {
         Binding(
-            get: { options.outputFolder.isEmpty ? globalOutputFolder : options.outputFolder },
-            set: { options.outputFolder = $0 == globalOutputFolder ? "" : $0 }
+            get: { ProfileStore.resolvedFolder(perDownload: options.outputFolder, profile: profileOutputFolder, global: globalOutputFolder) },
+            set: { options.outputFolder = ($0 == profileOutputFolder || $0 == globalOutputFolder) ? "" : $0 }
         )
     }
 

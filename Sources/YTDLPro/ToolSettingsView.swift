@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ToolSettingsView: View {
@@ -52,10 +53,46 @@ struct ToolSettingsView: View {
                 }
                 .disabled(downloads.tools.ytDlp == nil || downloads.isUpdatingYtDlp)
             }
+
+            Section("Download folder") {
+                LabeledContent("Default folder") {
+                    Text(downloads.globalOutputFolder)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+                Picker("Folder behavior", selection: $downloads.folderPolicy) {
+                    ForEach(FolderPolicy.allCases) { policy in
+                        Text(policy.rawValue).tag(policy)
+                    }
+                }
+                HStack {
+                    Button("Choose folder…", systemImage: "folder", action: chooseGlobalFolder)
+                    Button("Reset", systemImage: "arrow.counterclockwise") { downloads.resetGlobalOutputFolder() }
+                }
+            }
+
+            Section("Downloads") {
+                Stepper("Maximum concurrent downloads: \(downloads.maxConcurrentDownloads)", value: $downloads.maxConcurrentDownloads, in: 1...8)
+                Toggle("Notify when downloads finish", isOn: $downloads.notificationsOnFinish)
+                Toggle("Notify when downloads fail", isOn: $downloads.notificationsOnFailure)
+                Toggle("Prevent sleep while downloads are active", isOn: $downloads.preventSleepWhileDownloading)
+            }
         }
         .formStyle(.grouped)
         .padding(16)
         .frame(width: 540, height: 540)
+    }
+
+    private func chooseGlobalFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            downloads.globalOutputFolder = url.path
+        }
     }
 
     @ViewBuilder

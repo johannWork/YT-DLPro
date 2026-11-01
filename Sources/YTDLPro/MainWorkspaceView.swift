@@ -7,6 +7,7 @@ struct MainWorkspaceView: View {
     @State private var urlInput = ""
     @State private var isDropTargeted = false
     @State private var selectedTab = WorkspaceTab.queue
+    @State private var isProfileManagerPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,6 +19,7 @@ struct MainWorkspaceView: View {
                     .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            downloadStatusBar
             commandPreview
         }
         .background(.background)
@@ -33,11 +35,30 @@ struct MainWorkspaceView: View {
         .onChange(of: downloads.infoError) { _, error in
             if error != nil { selectedTab = .formats }
         }
+        .sheet(isPresented: $isProfileManagerPresented) {
+            ProfileManagerView(downloads: downloads)
+        }
     }
 
     private var sidebar: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Picker("Profile", selection: Binding(
+                        get: { downloads.selectedProfileID },
+                        set: { downloads.selectProfile($0) }
+                    )) {
+                        ForEach(downloads.profiles) { profile in
+                            Text(profile.name).tag(Optional(profile.id))
+                        }
+                    }
+                    .labelsHidden()
+                    Button("Manage Profiles", systemImage: "slider.horizontal.3") {
+                        isProfileManagerPresented = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Manage download profiles")
+                }
                 HStack {
                     Text("Video URLs").font(.headline)
                     Spacer()
@@ -85,6 +106,7 @@ struct MainWorkspaceView: View {
             DownloadOptionsPanel(
                 options: $downloads.options,
                 globalOutputFolder: $downloads.globalOutputFolder,
+                profileOutputFolder: downloads.selectedProfile?.outputFolder ?? "",
                 chooseFolder: chooseOutputFolder
             )
         }
@@ -118,6 +140,13 @@ struct MainWorkspaceView: View {
                     formats: downloads.videoInfo?.formats ?? [],
                     selectedFormatID: $downloads.options.selectedFormatID
                 )
+            case .history:
+                HistoryPanel(
+                    history: downloads.history,
+                    redownload: downloads.addHistoryItemAgain,
+                    reveal: downloads.revealInFinder,
+                    remove: downloads.removeHistory
+                )
             }
         }
     }
@@ -127,12 +156,53 @@ struct MainWorkspaceView: View {
             if downloads.jobs.isEmpty {
                 ContentUnavailableView("Queue is empty", systemImage: "arrow.down.circle", description: Text("Add video or playlist URLs to begin."))
             } else {
-                List(downloads.jobs) { job in
-                    QueueRow(job: job, cancel: { downloads.cancel(job) }, remove: { downloads.remove(job) })
+                List {
+                    ForEach(downloads.jobs) { job in
+                        let index = downloads.jobs.firstIndex(where: { $0.id == job.id }) ?? 0
+                        QueueRow(
+                            job: job,
+                            profiles: downloads.profiles,
+                            canMoveUp: index > 0 && downloads.jobs[index - 1].status != .downloading,
+                            canMoveDown: index < downloads.jobs.count - 1 && downloads.jobs[index + 1].status != .downloading,
+                            moveUp: { downloads.moveJob(job.id, by: -1) },
+                            moveDown: { downloads.moveJob(job.id, by: 1) },
+                            pause: { downloads.pause(job) },
+                            resume: { downloads.resume(job) },
+                            retry: { downloads.retry(job) },
+                            cancel: { downloads.cancel(job) },
+                            remove: { downloads.remove(job) },
+                            reveal: { downloads.revealInFinder(job.outputPath) },
+                            applyProfile: { downloads.applyProfile($0, to: job.id) },
+                            chooseFolder: { chooseJobFolder(job.id) }
+                        )
+                    }
                 }
                 .listStyle(.inset)
             }
         }
+    }
+
+    private var downloadStatusBar: some View {
+        VStack(spacing: 7) {
+            ProgressView(value: downloads.overallProgress)
+            HStack(spacing: 14) {
+                Label("\(downloads.jobs.filter { $0.status == .completed }.count) / \(downloads.jobs.count) done", systemImage: "checkmark.circle")
+                if !downloads.combinedSpeed.isEmpty {
+                    Label(downloads.combinedSpeed, systemImage: "speedometer")
+                }
+                if !downloads.overallETA.isEmpty {
+                    Label("ETA \(downloads.overallETA)", systemImage: "clock")
+                }
+                Spacer()
+                Text("\(Int(downloads.overallProgress * 100))%")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(.quaternary.opacity(0.28))
     }
 
     private var commandPreview: some View {
@@ -226,6 +296,17 @@ struct MainWorkspaceView: View {
         }
     }
 
+    private func chooseJobFolder(_ jobID: UUID) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            downloads.setDownloadFolder(url.path, for: jobID)
+        }
+    }
+
     private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
         let matching = providers.filter { $0.canLoadObject(ofClass: URL.self) }
         guard !matching.isEmpty else { return false }
@@ -245,13 +326,25 @@ struct MainWorkspaceView: View {
 private enum WorkspaceTab: String, CaseIterable, Identifiable {
     case queue = "Queue"
     case formats = "Formats"
+    case history = "History"
     var id: String { rawValue }
 }
 
 private struct QueueRow: View {
     let job: DownloadJob
+    let profiles: [DownloadProfile]
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let pause: () -> Void
+    let resume: () -> Void
+    let retry: () -> Void
     let cancel: () -> Void
     let remove: () -> Void
+    let reveal: () -> Void
+    let applyProfile: (UUID?) -> Void
+    let chooseFolder: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -261,12 +354,33 @@ private struct QueueRow: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                 Spacer(minLength: 10)
+                if job.status != .downloading {
+                    Button("Move up", systemImage: "arrow.up") { moveUp() }
+                        .labelStyle(.iconOnly)
+                        .disabled(!canMoveUp)
+                        .help("Move up")
+                    Button("Move down", systemImage: "arrow.down") { moveDown() }
+                        .labelStyle(.iconOnly)
+                        .disabled(!canMoveDown)
+                        .help("Move down")
+                }
                 Text(job.status.rawValue)
                     .font(.callout)
                     .foregroundStyle(job.status == .failed ? .red : .secondary)
-                Button(job.status == .downloading ? "Cancel" : "Remove", systemImage: job.status == .downloading ? "xmark" : "trash", action: job.status == .downloading ? cancel : remove)
-                    .labelStyle(.iconOnly)
-                    .help(job.status == .downloading ? "Cancel download" : "Remove from queue")
+                if job.status == .downloading {
+                    Button("Pause", systemImage: "pause.fill", action: pause).labelStyle(.iconOnly).help("Pause download")
+                    Button("Cancel", systemImage: "xmark", action: cancel).labelStyle(.iconOnly).help("Cancel download")
+                } else if job.status == .paused {
+                    Button("Resume", systemImage: "play.fill", action: resume).labelStyle(.iconOnly).help("Resume download")
+                    Button("Cancel", systemImage: "xmark", action: cancel).labelStyle(.iconOnly).help("Cancel download")
+                } else if job.status == .failed || job.status == .cancelled {
+                    Button("Retry", systemImage: "arrow.clockwise", action: retry).labelStyle(.iconOnly).help("Retry download")
+                    Button("Remove", systemImage: "trash", action: remove).labelStyle(.iconOnly).help("Remove from queue")
+                } else if job.status == .completed {
+                    Button("Reveal in Finder", systemImage: "folder", action: reveal).labelStyle(.iconOnly).help("Reveal in Finder")
+                } else {
+                    Button("Remove", systemImage: "trash", action: remove).labelStyle(.iconOnly).help("Remove from queue")
+                }
             }
             if job.status == .downloading || job.progress > 0 {
                 ProgressView(value: job.progress)
@@ -283,6 +397,54 @@ private struct QueueRow: View {
             }
         }
         .padding(.vertical, 5)
-        .contextMenu { Button("Remove from Queue", systemImage: "trash", action: remove) }
+        .contextMenu {
+            if job.status == .downloading { Button("Pause", systemImage: "pause.fill", action: pause) }
+            if job.status == .paused { Button("Resume", systemImage: "play.fill", action: resume) }
+            if job.status == .failed || job.status == .cancelled { Button("Retry", systemImage: "arrow.clockwise", action: retry) }
+            if job.outputPath != nil { Button("Reveal in Finder", systemImage: "folder", action: reveal) }
+            Menu("Use profile") {
+                ForEach(profiles) { profile in
+                    Button(profile.name) { applyProfile(profile.id) }
+                }
+            }
+            Button("Set output folder…", systemImage: "folder.badge.gearshape", action: chooseFolder)
+            Button("Remove from Queue", systemImage: "trash", action: remove)
+        }
+    }
+}
+
+private struct HistoryPanel: View {
+    let history: [DownloadHistoryItem]
+    let redownload: (DownloadHistoryItem) -> Void
+    let reveal: (String?) -> Void
+    let remove: (DownloadHistoryItem) -> Void
+
+    var body: some View {
+        if history.isEmpty {
+            ContentUnavailableView("No download history", systemImage: "clock.arrow.circlepath", description: Text("Completed downloads will appear here."))
+        } else {
+            List(history) { item in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title).fontWeight(.medium).lineLimit(1)
+                        Text(item.url.absoluteString).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(item.downloadedAt, style: .date).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 4)
+                    Button("Re-download", systemImage: "arrow.down.circle") { redownload(item) }
+                        .labelStyle(.iconOnly)
+                        .help("Re-download")
+                    Button("Reveal", systemImage: "folder") { reveal(item.outputPath) }
+                        .labelStyle(.iconOnly)
+                        .disabled(item.outputPath == nil)
+                        .help("Reveal in Finder")
+                    Button("Remove", systemImage: "trash") { remove(item) }
+                        .labelStyle(.iconOnly)
+                        .help("Remove from history")
+                }
+                .padding(.vertical, 4)
+            }
+            .listStyle(.inset)
+        }
     }
 }
