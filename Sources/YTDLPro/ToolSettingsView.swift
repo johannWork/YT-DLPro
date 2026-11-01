@@ -3,9 +3,16 @@ import SwiftUI
 
 struct ToolSettingsView: View {
     @ObservedObject var downloads: DownloadCoordinator
+    @State private var showSetupCheck = false
 
     var body: some View {
         Form {
+            Section("Setup") {
+                Button("Check setup…", systemImage: "checkmark.shield") {
+                    showSetupCheck = true
+                }
+            }
+
             Section("Tool preference") {
                 Picker("Discovery order", selection: $downloads.toolPreference) {
                     ForEach(ToolPreference.allCases) { preference in
@@ -20,6 +27,7 @@ struct ToolSettingsView: View {
             Section("Active tools") {
                 toolRow("yt-dlp", tool: downloads.tools.ytDlp)
                 toolRow("ffmpeg", tool: downloads.tools.ffmpeg)
+                toolRow("Deno", tool: downloads.tools.jsRuntime)
             }
 
             if !downloads.tools.missingTools.isEmpty {
@@ -85,7 +93,10 @@ struct ToolSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(16)
-        .frame(width: 540, height: 540)
+        .frame(width: 540, height: 620)
+        .sheet(isPresented: $showSetupCheck) {
+            SetupCheckView(downloads: downloads)
+        }
     }
 
     private func chooseGlobalFolder() {

@@ -16,41 +16,86 @@ enum ToolInstaller {
 
         for name in names {
             let asset = try asset(named: name)
-            let expectedChecksum = try await expectedChecksum(for: asset, name: name)
+            let checksumValue: String?
+            do {
+                checksumValue = try await expectedChecksum(for: asset, name: name)
+            } catch {
+                throw ToolInstallError.downloadHostUnavailable(name, asset.url, error.localizedDescription)
+            }
             onProgress(name, 0, "Downloading")
             let temporaryURL = binaryDirectory.appendingPathComponent(".\(name)-\(UUID().uuidString).download")
             defer { try? fileManager.removeItem(at: temporaryURL) }
-            try await URLSessionFileDownload.download(from: asset.url, to: temporaryURL) { fraction in
-                onProgress(name, fraction, "Downloading")
+            let extractionDirectory = binaryDirectory.appendingPathComponent(".\(name)-\(UUID().uuidString).extract", isDirectory: true)
+            defer { try? fileManager.removeItem(at: extractionDirectory) }
+            do {
+                try await URLSessionFileDownload.download(from: asset.url, to: temporaryURL) { fraction in
+                    onProgress(name, fraction, "Downloading")
+                }
+            } catch {
+                throw ToolInstallError.downloadHostUnavailable(name, asset.url, error.localizedDescription)
             }
 
-            if let expectedChecksum {
+            if let checksumValue {
                 onProgress(name, 1, "Verifying checksum")
                 let actualChecksum = try await checksum(of: temporaryURL)
-                guard actualChecksum == expectedChecksum else {
+                guard actualChecksum == checksumValue else {
                     throw ToolInstallError.checksumMismatch(name)
                 }
             }
 
-            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporaryURL.path)
-            removeQuarantine(from: temporaryURL)
+            let executableURL: URL
+            if let archiveExecutableName = asset.archiveExecutableName {
+                try fileManager.createDirectory(at: extractionDirectory, withIntermediateDirectories: true)
+                let extractionCommand = ShellProcess.command(["/usr/bin/ditto", "-x", "-k", temporaryURL.path, extractionDirectory.path])
+                let extractionStatus = try await ShellProcess.run(command: extractionCommand)
+                guard extractionStatus == 0 else { throw ToolInstallError.archiveExtractionFailed(name) }
+                executableURL = extractionDirectory.appendingPathComponent(archiveExecutableName)
+            } else {
+                executableURL = temporaryURL
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+            removeQuarantine(from: executableURL)
             onProgress(name, 1, "Verifying version")
-            guard await ToolDiscovery.verify(path: temporaryURL, name: name, versionArguments: asset.versionArguments) != nil else {
+            guard await ToolDiscovery.verify(path: executableURL, name: name, versionArguments: asset.versionArguments) != nil else {
                 throw ToolInstallError.versionCheckFailed(name)
             }
 
             let installedURL = binaryDirectory.appendingPathComponent(name)
             if fileManager.fileExists(atPath: installedURL.path) {
-                _ = try fileManager.replaceItemAt(installedURL, withItemAt: temporaryURL)
+                _ = try fileManager.replaceItemAt(installedURL, withItemAt: executableURL)
             } else {
-                try fileManager.moveItem(at: temporaryURL, to: installedURL)
+                try fileManager.copyItem(at: executableURL, to: installedURL)
             }
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: installedURL.path)
 
             if let licenseURL = asset.licenseURL, name == "ffmpeg" {
                 let (licenseData, _) = try await URLSession.shared.data(from: licenseURL)
                 try licenseData.write(to: binaryDirectory.appendingPathComponent("ffmpeg.LICENSE"), options: .atomic)
             }
         }
+    }
+
+    static func installManualTool(from sourceURL: URL, name: String, in binaryDirectory: URL = binaryDirectory) async throws {
+        guard ["yt-dlp", "ffmpeg", "ffprobe", "deno"].contains(name) else {
+            throw ToolInstallError.unsupportedTool(name)
+        }
+        try FileManager.default.createDirectory(at: binaryDirectory, withIntermediateDirectories: true)
+        let destination = binaryDirectory.appendingPathComponent(name)
+        let temporary = binaryDirectory.appendingPathComponent(".\(name)-\(UUID().uuidString).manual")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.copyItem(at: sourceURL, to: temporary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporary.path)
+        removeQuarantine(from: temporary)
+        let versionArgs = name == "yt-dlp" ? ["--version"] : ["-version"]
+        guard await ToolDiscovery.verify(path: temporary, name: name, versionArguments: versionArgs) != nil else {
+            throw ToolInstallError.versionCheckFailed(name)
+        }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try FileManager.default.copyItem(at: temporary, to: destination)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
     }
 
     private static func asset(named name: String) throws -> ToolAsset {
@@ -61,6 +106,17 @@ enum ToolInstaller {
                 versionArguments: ["--version"],
                 checksumURL: ToolDownloadConfiguration.ytDlpChecksumsURL,
                 checksumFileName: "yt-dlp_macos"
+            )
+        case "deno":
+            guard let deno = ToolDownloadConfiguration.denoByArchitecture[.current] else {
+                throw ToolInstallError.unsupportedTool("deno for \(ToolArchitecture.current.rawValue)")
+            }
+            return ToolAsset(
+                url: deno.archiveURL,
+                versionArguments: ["--version"],
+                checksumURL: deno.checksumURL,
+                checksumFileName: deno.checksumFileName,
+                archiveExecutableName: "deno"
             )
         case "ffmpeg", "ffprobe":
             guard let assets = ToolDownloadConfiguration.ffmpegByArchitecture[.current] else {
@@ -129,14 +185,16 @@ private struct ToolAsset {
     var sha256: String?
     var checksumURL: URL?
     var checksumFileName: String?
+    var archiveExecutableName: String?
     var licenseURL: URL?
 
-    init(url: URL, versionArguments: [String], sha256: String? = nil, checksumURL: URL? = nil, checksumFileName: String? = nil, licenseURL: URL? = nil) {
+    init(url: URL, versionArguments: [String], sha256: String? = nil, checksumURL: URL? = nil, checksumFileName: String? = nil, archiveExecutableName: String? = nil, licenseURL: URL? = nil) {
         self.url = url
         self.versionArguments = versionArguments
         self.sha256 = sha256
         self.checksumURL = checksumURL
         self.checksumFileName = checksumFileName
+        self.archiveExecutableName = archiveExecutableName
         self.licenseURL = licenseURL
     }
 }
@@ -146,6 +204,9 @@ private enum ToolInstallError: LocalizedError {
     case checksumUnavailable(String)
     case checksumMismatch(String)
     case versionCheckFailed(String)
+    case archiveExtractionFailed(String)
+    case downloadHostUnavailable(String, URL, String)
+    case httpStatus(Int)
 
     var errorDescription: String? {
         switch self {
@@ -153,6 +214,9 @@ private enum ToolInstallError: LocalizedError {
         case .checksumUnavailable(let name): "Could not find the official SHA-256 checksum for \(name)."
         case .checksumMismatch(let name): "The downloaded \(name) binary failed its SHA-256 check. It was not installed."
         case .versionCheckFailed(let name): "The downloaded \(name) binary did not pass its version check. It was not installed."
+        case .archiveExtractionFailed(let name): "The downloaded \(name) archive could not be extracted."
+        case .downloadHostUnavailable(let name, let url, let detail): "Could not reach the download host for \(name): \(detail)\n\nYou can download it manually from:\n\(url.absoluteString)\nThen use Choose File to install the executable. Deno archives must be unzipped first."
+        case .httpStatus(let status): "The download host returned HTTP \(status). Check your connection or choose the downloaded file manually."
         }
     }
 }
@@ -203,6 +267,10 @@ private final class FileDownloadDelegate: NSObject, URLSessionDownloadDelegate, 
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        if let response = downloadTask.response as? HTTPURLResponse, !(200...299).contains(response.statusCode) {
+            finish(.failure(ToolInstallError.httpStatus(response.statusCode)))
+            return
+        }
         do {
             try FileManager.default.moveItem(at: location, to: destination)
             finish(.success(()))

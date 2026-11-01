@@ -14,23 +14,33 @@ final class ToolInstallerIntegrationTests: XCTestCase {
         )
     }
 
+    func testDenoUsesOfficialPerArchitectureArchivesAndChecksums() {
+        XCTAssertTrue(ToolDownloadConfiguration.denoByArchitecture[.arm64]?.archiveURL.absoluteString.contains("deno-aarch64-apple-darwin.zip") == true)
+        XCTAssertTrue(ToolDownloadConfiguration.denoByArchitecture[.x64]?.archiveURL.absoluteString.contains("deno-x86_64-apple-darwin.zip") == true)
+        XCTAssertTrue(ToolDownloadConfiguration.denoByArchitecture[.arm64]?.checksumURL.absoluteString.hasSuffix(".sha256sum") == true)
+        XCTAssertTrue(ToolDownloadConfiguration.denoByArchitecture[.x64]?.checksumURL.absoluteString.hasSuffix(".sha256sum") == true)
+    }
+
     func testFallbackToolInstallInIsolatedDirectory() async throws {
         let isolatedDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("YT-DLPro-tools-test-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: isolatedDirectory) }
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: isolatedDirectory.appendingPathComponent("yt-dlp").path))
-        try await ToolInstaller.installMissing(["yt-dlp", "ffmpeg"], in: isolatedDirectory) { _, _, _ in }
+        try await ToolInstaller.installMissing(["yt-dlp", "ffmpeg", "deno"], in: isolatedDirectory) { _, _, _ in }
 
-        let status = await ToolDiscovery.locate(preference: .builtInFirst, fallbackDirectory: isolatedDirectory)
+        let restrictedPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+        let status = await ToolDiscovery.locate(preference: .systemFirst, fallbackDirectory: isolatedDirectory, systemPath: restrictedPath)
         XCTAssertEqual(status.ytDlp?.source, .builtIn)
         XCTAssertEqual(status.ffmpeg?.source, .builtIn)
+        XCTAssertEqual(status.jsRuntime?.source, .builtIn)
         XCTAssertNotNil(status.ytDlp?.version)
         XCTAssertNotNil(status.ffmpeg?.version)
+        XCTAssertTrue(status.jsRuntime?.version.contains("deno 2.") == true)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: isolatedDirectory.appendingPathComponent("ffprobe").path))
 
         let videoURL = URL(string: "https://www.youtube.com/watch?v=ScMzIvxBSi4")!
-        let info = try await VideoInfoService.fetch(url: videoURL, tool: status.ytDlp!)
+        let info = try await VideoInfoService.fetch(url: videoURL, tool: status.ytDlp!, jsRuntime: status.jsRuntime)
         XCTAssertEqual(info.title, "Placeholder Video")
         XCTAssertGreaterThan(info.formats.count, 0)
 

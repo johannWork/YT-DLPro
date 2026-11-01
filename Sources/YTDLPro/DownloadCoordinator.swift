@@ -7,6 +7,10 @@ final class DownloadCoordinator: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     @Published private(set) var history: [DownloadHistoryItem] = []
     @Published private(set) var profiles: [DownloadProfile] = []
+    @Published private(set) var isCheckingInitialSetup = true
+    @Published private(set) var outputFolderAccessible = false
+    @Published private(set) var notificationsAuthorized = false
+    @Published private(set) var isCheckingRequirements = false
     @Published var selectedProfileID: UUID? {
         didSet {
             guard oldValue != selectedProfileID else { return }
@@ -124,6 +128,49 @@ final class DownloadCoordinator: ObservableObject {
         let discoveredTools = await ToolDiscovery.locate(preference: preference)
         guard preference == toolPreference else { return }
         tools = discoveredTools
+        isCheckingInitialSetup = false
+        await refreshRequirements()
+    }
+
+    func refreshRequirements() async {
+        isCheckingRequirements = true
+        outputFolderAccessible = Self.canWriteToDirectory(globalOutputFolder)
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        notificationsAuthorized = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+        isCheckingRequirements = false
+    }
+
+    func requestNotificationPermission() {
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+            await refreshRequirements()
+        }
+    }
+
+    func chooseGlobalOutputFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            globalOutputFolder = url.path
+            Task { await refreshRequirements() }
+        }
+    }
+
+    private static func canWriteToDirectory(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.path), FileManager.default.isWritableFile(atPath: url.path) else { return false }
+        let probeURL = url.appendingPathComponent(".ytdlpro-write-check-\(UUID().uuidString)")
+        do {
+            try Data().write(to: probeURL, options: .atomic)
+            try FileManager.default.removeItem(at: probeURL)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: probeURL)
+            return false
+        }
     }
 
     func updateYtDlp() {
@@ -140,9 +187,9 @@ final class DownloadCoordinator: ObservableObject {
         }
     }
 
-    func downloadTools() {
-        guard !isDownloadingTools, !tools.missingTools.isEmpty else { return }
-        let missingNames = tools.missingTools
+    func downloadTools(_ requestedNames: [String]? = nil) {
+        let missingNames = requestedNames ?? tools.missingTools
+        guard !isDownloadingTools, !missingNames.isEmpty else { return }
         isDownloadingTools = true
         toolDownloadProgress = 0
         toolDownloadError = nil
@@ -163,6 +210,24 @@ final class DownloadCoordinator: ObservableObject {
                 await refreshTools()
                 toolDownloadError = error.localizedDescription
                 toolDownloadStatus = nil
+            }
+            isDownloadingTools = false
+        }
+    }
+
+    func installManualTool(from url: URL, name: String) {
+        isDownloadingTools = true
+        toolDownloadError = nil
+        toolDownloadStatus = "Verifying selected \(name) file"
+        Task {
+            do {
+                try await ToolInstaller.installManualTool(from: url, name: name)
+                await refreshTools()
+                toolDownloadStatus = "\(name) installed and verified"
+                toolDownloadProgress = 1
+            } catch {
+                toolDownloadStatus = nil
+                toolDownloadError = error.localizedDescription
             }
             isDownloadingTools = false
         }
@@ -305,6 +370,9 @@ final class DownloadCoordinator: ObservableObject {
         )
         var arguments = previewOptions.arguments(globalOutputFolder: globalOutputFolder)
         if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
+        if let jsRuntime = tools.jsRuntime {
+            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
+        }
         if let url { arguments += ["--", url.absoluteString] }
         return ShellProcess.command([tools.ytDlp?.path ?? "yt-dlp"] + arguments)
     }
@@ -348,7 +416,7 @@ final class DownloadCoordinator: ObservableObject {
         infoError = nil
         inspectedURL = url
         do {
-            videoInfo = try await VideoInfoService.fetch(url: url, tool: tool)
+            videoInfo = try await VideoInfoService.fetch(url: url, tool: tool, jsRuntime: tools.jsRuntime)
             if let title = videoInfo?.title {
                 for index in jobs.indices where jobs[index].url == url { jobs[index].title = title }
             }
@@ -449,6 +517,9 @@ final class DownloadCoordinator: ObservableObject {
         )
         var arguments = effectiveOptions.arguments(globalOutputFolder: globalOutputFolder)
         if let ffmpeg = tools.ffmpeg { arguments += ["--ffmpeg-location", ffmpeg.path] }
+        if let jsRuntime = tools.jsRuntime {
+            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
+        }
         arguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
         let command = ShellProcess.command([tool.path] + arguments)
         let outputCollector = JobOutputPathCollector()
@@ -466,6 +537,9 @@ final class DownloadCoordinator: ObservableObject {
                 outputCollector.clear()
                 var fallbackArguments = effectiveOptions.arguments(globalOutputFolder: globalOutputFolder, forceMP4Reencode: true)
                 if let ffmpeg = tools.ffmpeg { fallbackArguments += ["--ffmpeg-location", ffmpeg.path] }
+                if let jsRuntime = tools.jsRuntime {
+                    fallbackArguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
+                }
                 fallbackArguments += ["--print", "after_move:YT-DLPRO_PATH:%(filepath)s", "--", url]
                 let fallbackCommand = ShellProcess.command([tool.path] + fallbackArguments)
                 status = try await runDownload(command: fallbackCommand, jobID: jobID, outputCollector: outputCollector, logCollector: logCollector)

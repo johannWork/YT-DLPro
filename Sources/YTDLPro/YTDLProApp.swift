@@ -7,8 +7,21 @@ struct YTDLProApp: App {
 
     var body: some Scene {
         WindowGroup("YT-DLPro") {
-            MainWorkspaceView(downloads: downloads)
-                .frame(minWidth: 1020, minHeight: 700)
+            Group {
+                if downloads.isCheckingInitialSetup {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Checking YT-DLPro setup…").foregroundStyle(.secondary)
+                    }
+                    .frame(minWidth: 520, minHeight: 320)
+                } else if !downloads.tools.missingTools.isEmpty {
+                    FirstLaunchSetupView(downloads: downloads)
+                        .frame(minWidth: 620, minHeight: 440)
+                } else {
+                    MainWorkspaceView(downloads: downloads)
+                        .frame(minWidth: 1020, minHeight: 700)
+                }
+            }
         }
 
         Settings {

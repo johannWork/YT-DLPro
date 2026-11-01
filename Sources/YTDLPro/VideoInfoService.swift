@@ -1,8 +1,13 @@
 import Foundation
 
 enum VideoInfoService {
-    static func fetch(url: URL, tool: InstalledTool) async throws -> VideoInfo {
-        let command = ShellProcess.command([tool.path, "--no-warnings", "--skip-download", "-J", "--", url.absoluteString])
+    static func fetch(url: URL, tool: InstalledTool, jsRuntime: InstalledTool? = nil) async throws -> VideoInfo {
+        var arguments = ["--no-warnings", "--skip-download"]
+        if let jsRuntime {
+            arguments += ["--js-runtimes", "deno:\(jsRuntime.path)", "--remote-components", "ejs:github"]
+        }
+        arguments += ["-J", "--", url.absoluteString]
+        let command = ShellProcess.command([tool.path] + arguments)
         let output = OutputCollector()
         let status = try await ShellProcess.run(command: command) { line in
             output.append(line)

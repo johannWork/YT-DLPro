@@ -25,9 +25,10 @@ struct InstalledTool: Identifiable {
 struct ToolStatus {
     var ytDlp: InstalledTool?
     var ffmpeg: InstalledTool?
+    var jsRuntime: InstalledTool?
 
     var missingTools: [String] {
-        [ytDlp == nil ? "yt-dlp" : nil, ffmpeg == nil ? "ffmpeg" : nil].compactMap { $0 }
+        [ytDlp == nil ? "yt-dlp" : nil, ffmpeg == nil ? "ffmpeg" : nil, jsRuntime == nil ? "deno" : nil].compactMap { $0 }
     }
 }
 
@@ -77,6 +78,18 @@ enum ToolDownloadConfiguration {
             licenseURL: URL(string: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/darwin-x64.LICENSE")!
         )
     ]
+    static let denoByArchitecture: [ToolArchitecture: (archiveURL: URL, checksumURL: URL, checksumFileName: String)] = [
+        .arm64: (
+            URL(string: "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip")!,
+            URL(string: "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip.sha256sum")!,
+            "deno-aarch64-apple-darwin.zip"
+        ),
+        .x64: (
+            URL(string: "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip")!,
+            URL(string: "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip.sha256sum")!,
+            "deno-x86_64-apple-darwin.zip"
+        )
+    ]
 }
 
 enum ToolDiscovery {
@@ -87,10 +100,15 @@ enum ToolDiscovery {
         preference == .systemFirst ? [.system, .builtIn] : [.builtIn, .system]
     }
 
-    static func locate(preference: ToolPreference, fallbackDirectory: URL = fallbackDirectory) async -> ToolStatus {
-        async let ytDlp = locate(name: "yt-dlp", versionArguments: ["--version"], preference: preference, fallbackDirectory: fallbackDirectory)
-        async let ffmpeg = locate(name: "ffmpeg", versionArguments: ["-version"], preference: preference, fallbackDirectory: fallbackDirectory)
-        return await ToolStatus(ytDlp: ytDlp, ffmpeg: ffmpeg)
+    static func locate(
+        preference: ToolPreference,
+        fallbackDirectory: URL = fallbackDirectory,
+        systemPath: String? = nil
+    ) async -> ToolStatus {
+        async let ytDlp = locate(name: "yt-dlp", versionArguments: ["--version"], preference: preference, fallbackDirectory: fallbackDirectory, systemPath: systemPath)
+        async let ffmpeg = locate(name: "ffmpeg", versionArguments: ["-version"], preference: preference, fallbackDirectory: fallbackDirectory, systemPath: systemPath)
+        async let deno = locate(name: "deno", versionArguments: ["--version"], preference: preference, fallbackDirectory: fallbackDirectory, systemPath: systemPath)
+        return await ToolStatus(ytDlp: ytDlp, ffmpeg: ffmpeg, jsRuntime: deno)
     }
 
     static func verify(path: URL, name: String, versionArguments: [String]) async -> InstalledTool? {
@@ -105,21 +123,32 @@ enum ToolDiscovery {
             return nil
         }
         guard status == 0, let version = output.value.split(whereSeparator: \.isNewline).first else { return nil }
+        if name == "deno", !isSupportedDenoVersion(String(version)) { return nil }
         return InstalledTool(name: name, path: path.path, version: String(version), source: .builtIn)
+    }
+
+    private static func isSupportedDenoVersion(_ versionLine: String) -> Bool {
+        let version = versionLine.split(whereSeparator: \.isWhitespace).dropFirst().first ?? ""
+        let components = version.split(separator: ".").prefix(3).compactMap { Int($0) }
+        guard components.count == 3 else { return false }
+        if components[0] != 2 { return components[0] > 2 }
+        if components[1] != 3 { return components[1] > 3 }
+        return components[2] >= 0
     }
 
     private static func locate(
         name: String,
         versionArguments: [String],
         preference: ToolPreference,
-        fallbackDirectory: URL
+        fallbackDirectory: URL,
+        systemPath: String?
     ) async -> InstalledTool? {
         let builtInPath = fallbackDirectory.appendingPathComponent(name)
         for source in sourceOrder(for: preference) {
             let candidate: URL?
             switch source {
             case .system:
-                candidate = await resolveSystemPath(name).map(URL.init(fileURLWithPath:))
+                candidate = await resolveSystemPath(name, path: systemPath).map(URL.init(fileURLWithPath:))
             case .builtIn: candidate = FileManager.default.isExecutableFile(atPath: builtInPath.path) ? builtInPath : nil
             }
             guard let candidate, let verified = await verify(path: candidate, name: name, versionArguments: versionArguments) else {
@@ -130,9 +159,10 @@ enum ToolDiscovery {
         return nil
     }
 
-    private static func resolveSystemPath(_ name: String) async -> String? {
+    private static func resolveSystemPath(_ name: String, path: String?) async -> String? {
         let output = ToolOutputCollector()
-        let status = try? await ShellProcess.run(command: "command -v \(ShellProcess.quote(name))") {
+        let pathPrefix = path.map { "PATH=\(ShellProcess.quote($0)) " } ?? ""
+        let status = try? await ShellProcess.run(command: "\(pathPrefix)command -v \(ShellProcess.quote(name))") {
             output.append($0)
         }
         guard status == 0 else { return nil }

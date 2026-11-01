@@ -11,6 +11,13 @@ INSTALL_PATH="$INSTALL_DIR/YT-DLPro.app"
 PRODUCT_PATH="$BUILD_ROOT/Xcode/Build/Products/Release/YT-DLPro"
 
 cd "$PROJECT_ROOT"
+MACOS_VERSION="$(/usr/bin/sw_vers -productVersion)"
+MACOS_MAJOR="${MACOS_VERSION%%.*}"
+if (( MACOS_MAJOR < 14 )); then
+  print -u2 "YT-DLPro requires macOS 14 (Sonoma) or newer. This Mac is running macOS $MACOS_VERSION."
+  exit 1
+fi
+
 mkdir -p "$BUILD_ROOT/package" "$INSTALL_DIR"
 
 xcodebuild \

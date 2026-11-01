@@ -252,6 +252,7 @@ struct MainWorkspaceView: View {
             HStack(spacing: 18) {
                 toolLabel("yt-dlp", tool: downloads.tools.ytDlp)
                 toolLabel("ffmpeg", tool: downloads.tools.ffmpeg)
+                toolLabel("Deno", tool: downloads.tools.jsRuntime)
                 Spacer()
                 Button("Update yt-dlp", systemImage: "arrow.clockwise") { downloads.updateYtDlp() }
                     .disabled(downloads.isUpdatingYtDlp)
@@ -270,8 +271,8 @@ struct MainWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Required tools not found: \(downloads.tools.missingTools.joined(separator: ", "))")
                         .fontWeight(.semibold)
-                    Text("Install yt-dlp and ffmpeg with Homebrew:").foregroundStyle(.secondary)
-                    Text("brew install yt-dlp ffmpeg")
+                    Text("Install with Homebrew or use Download Tools:").foregroundStyle(.secondary)
+                    Text("brew install yt-dlp ffmpeg deno")
                         .font(.system(.callout, design: .monospaced))
                         .textSelection(.enabled)
                     if downloads.isDownloadingTools {
